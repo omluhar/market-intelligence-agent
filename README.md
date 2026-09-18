@@ -6,7 +6,13 @@ The production build is a **single website**. Next.js is statically exported and
 
 ## Live / production
 
-Deploy the Docker image (one public URL):
+The app is on GitHub at [omluhar/market-intelligence-agent](https://github.com/omluhar/market-intelligence-agent).
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/omluhar/market-intelligence-agent)
+
+That button builds the Docker image (Next.js UI + FastAPI API on one URL). After the first deploy, set `OPENAI_API_KEY` in the Render dashboard so Scout can reason.
+
+You can also run the same image locally:
 
 ```bash
 docker build -t market-intelligence-agent .
