@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -23,7 +23,6 @@ const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ??
   (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "");
 const POLL_MS = 12_000;
-let didBootstrapScan = false;
 
 interface Snapshot {
   symbol: string;
@@ -68,7 +67,7 @@ interface TacticalProposal {
   symbol: string;
   action: string;
   target_price: number;
-  stop_loss: number;
+  stop_loss: number | null;
   time_horizon: string;
   setup_type: string;
   confidence: number;
@@ -87,6 +86,7 @@ interface ScanResult {
   snapshot: Snapshot;
   technical: TechnicalSnapshot;
   news: NewsItem[];
+  history?: OhlcvBar[];
   proposal: ScoutProposal | null;
   tactical: TacticalProposal | null;
   risk: RiskEval | null;
@@ -94,6 +94,7 @@ interface ScanResult {
   order: unknown | null;
   tactical_order: unknown | null;
   dry_run: boolean;
+  view_only?: boolean;
   message: string;
 }
 
@@ -137,6 +138,9 @@ function errorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+const overviewCache = new Map<string, ScanResult>();
+let didBootstrap = false;
+
 export default function Dashboard() {
   const [ticker, setTicker] = useState("AAPL");
   const [loading, setLoading] = useState(false);
@@ -149,6 +153,15 @@ export default function Dashboard() {
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [chartData, setChartData] = useState<OhlcvBar[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [hydrating, setHydrating] = useState(false);
+  const requestIdRef = useRef(0);
+
+  const applyOverview = useCallback((data: ScanResult) => {
+    setScanData(data);
+    if (data.history?.length) {
+      setChartData(data.history);
+    }
+  }, []);
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -206,6 +219,66 @@ export default function Dashboard() {
     }
   }, []);
 
+  const selectTicker = useCallback(
+    async (symbolToLoad: string) => {
+      const symbol = symbolToLoad.trim().toUpperCase();
+      if (!symbol) {
+        return;
+      }
+      const requestId = ++requestIdRef.current;
+      setTicker(symbol);
+      setError(null);
+      const cached = overviewCache.get(symbol);
+      if (cached) {
+        applyOverview(cached);
+      } else {
+        setHydrating(true);
+        setChartLoading(true);
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/overview/${symbol}`);
+        if (!res.ok) {
+          const errJson = await res.json().catch(() => ({}));
+          throw new Error(errJson.detail || "Quote request failed");
+        }
+        const data: ScanResult = await res.json();
+        overviewCache.set(symbol, data);
+        if (requestId !== requestIdRef.current) {
+          return;
+        }
+        applyOverview(data);
+      } catch (err: unknown) {
+        if (requestId !== requestIdRef.current) {
+          return;
+        }
+        if (!cached) {
+          setError(errorMessage(err, "Could not load ticker"));
+        }
+      } finally {
+        if (requestId === requestIdRef.current) {
+          setHydrating(false);
+          setChartLoading(false);
+        }
+      }
+    },
+    [applyOverview]
+  );
+
+  const prefetchTicker = useCallback((symbol: string) => {
+    const key = symbol.toUpperCase();
+    if (overviewCache.has(key)) {
+      return;
+    }
+    void fetch(`${API_BASE}/api/v1/overview/${key}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: ScanResult | null) => {
+        if (data?.ticker) {
+          overviewCache.set(data.ticker, data);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
   const runScan = useCallback(
     async (symbolToScan: string) => {
       const symbol = symbolToScan.trim().toUpperCase();
@@ -223,8 +296,14 @@ export default function Dashboard() {
           throw new Error(errJson.detail || "Scan request failed");
         }
         const data: ScanResult = await res.json();
+        overviewCache.set(symbol, data);
         setScanData(data);
-        await Promise.all([fetchOrders(), fetchRecommendations(), fetchHistory(symbol)]);
+        if (data.history?.length) {
+          setChartData(data.history);
+        } else {
+          await fetchHistory(symbol);
+        }
+        await Promise.all([fetchOrders(), fetchRecommendations()]);
       } catch (err: unknown) {
         setError(errorMessage(err, "An unexpected error occurred"));
       } finally {
@@ -289,9 +368,9 @@ export default function Dashboard() {
     fetchWatchlist();
     fetchOrders();
     fetchRecommendations();
-    if (!didBootstrapScan) {
-      didBootstrapScan = true;
-      void runScan("AAPL");
+    if (!didBootstrap) {
+      didBootstrap = true;
+      void selectTicker("AAPL");
     }
     const timer = window.setInterval(() => {
       void fetchOrders();
@@ -299,7 +378,13 @@ export default function Dashboard() {
       void fetchWatchlist();
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [fetchOrders, fetchRecommendations, fetchWatchlist, runScan]);
+  }, [fetchOrders, fetchRecommendations, fetchWatchlist, selectTicker]);
+
+  useEffect(() => {
+    watchlist.forEach((symbol, index) => {
+      window.setTimeout(() => prefetchTicker(symbol), 250 * (index + 1));
+    });
+  }, [prefetchTicker, watchlist]);
 
   const technical = scanData?.technical;
 
@@ -323,7 +408,7 @@ export default function Dashboard() {
               type="text"
               value={ticker}
               onChange={(e) => setTicker(e.target.value.toUpperCase())}
-              onKeyDown={(e) => e.key === "Enter" && runScan(ticker)}
+              onKeyDown={(e) => e.key === "Enter" && selectTicker(ticker)}
               placeholder="Ticker (e.g. MSFT, PFE, NVDA)"
               className="w-full bg-neutral-900 border border-neutral-800 rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:border-orange-500 text-neutral-100 uppercase"
             />
@@ -351,10 +436,7 @@ export default function Dashboard() {
             }`}
           >
             <button
-              onClick={() => {
-                setTicker(symbol);
-                void runScan(symbol);
-              }}
+              onClick={() => void selectTicker(symbol)}
               className="hover:text-white"
             >
               {symbol}
@@ -378,6 +460,7 @@ export default function Dashboard() {
 
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6 items-start">
         <div className="lg:col-span-2 space-y-6 min-w-0">
+          {hydrating && <div className="text-xs text-neutral-500">Refreshing quotes…</div>}
           {error && (
             <div className="bg-red-950/40 border border-red-800/80 p-4 rounded-xl flex items-center gap-3 text-red-200 text-sm">
               <AlertTriangle className="h-5 w-5 text-red-400 shrink-0" />
@@ -481,7 +564,9 @@ export default function Dashboard() {
                   <div className="flex items-center gap-2">
                     <ActionBadge action={scanData.proposal.action} />
                     <span className="text-xs text-neutral-300">
-                      {scanData.proposal.shares} shares @ {formatUsd(scanData.proposal.target_price)}
+                      {scanData.proposal.shares > 0
+                        ? `${scanData.proposal.shares} shares @ ${formatUsd(scanData.proposal.target_price)}`
+                        : `Target ${formatUsd(scanData.proposal.target_price)}`}
                     </span>
                   </div>
                   <p className="text-xs text-neutral-400 leading-relaxed bg-neutral-950/80 p-3 rounded-lg border border-neutral-800/80">
@@ -490,7 +575,9 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="bg-neutral-950/80 border border-neutral-800/80 p-3 rounded-lg text-xs text-neutral-400">
-                  {scanData?.message || "No scan performed yet."}
+                  {scanData.view_only
+                    ? "Click Scan to run the council on this name."
+                    : scanData.message || "No scan performed yet."}
                 </div>
               )}
             </div>
@@ -506,11 +593,16 @@ export default function Dashboard() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <ActionBadge action={scanData.tactical.action} />
                     <span className="text-xs text-neutral-300">
-                      Target {formatUsd(scanData.tactical.target_price)} · Stop {formatUsd(scanData.tactical.stop_loss)}
+                      Target {formatUsd(scanData.tactical.target_price)}
+                      {scanData.tactical.stop_loss
+                        ? ` · Stop ${formatUsd(scanData.tactical.stop_loss)}`
+                        : ""}
                     </span>
-                    <span className="text-[10px] text-neutral-500">
-                      {(scanData.tactical.confidence * 100).toFixed(0)}% conf
-                    </span>
+                    {scanData.tactical.confidence > 0 && (
+                      <span className="text-[10px] text-neutral-500">
+                        {(scanData.tactical.confidence * 100).toFixed(0)}% conf
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-neutral-400 leading-relaxed bg-neutral-950/80 p-3 rounded-lg border border-neutral-800/80">
                     {scanData.tactical.rationale}
@@ -588,10 +680,7 @@ export default function Dashboard() {
                 recommendations.map((rec) => (
                   <button
                     key={`${rec.symbol}-${rec.horizon}`}
-                    onClick={() => {
-                      setTicker(rec.symbol);
-                      void runScan(rec.symbol);
-                    }}
+                    onClick={() => void selectTicker(rec.symbol)}
                     className="w-full text-left bg-neutral-950/90 border border-neutral-800/80 p-3 rounded-lg text-xs space-y-1.5 hover:border-orange-800/80 transition-colors"
                   >
                     <div className="flex justify-between items-center gap-2">

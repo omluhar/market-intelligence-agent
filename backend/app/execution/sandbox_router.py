@@ -205,3 +205,15 @@ def get_recommendations() -> List[Dict[str, Any]]:
     rows = _rows_to_dicts(cursor)
     conn.close()
     return rows
+
+
+def get_recommendations_for_symbol(symbol: str) -> Dict[str, Dict[str, Any]]:
+    conn = _get_conn()
+    cursor = conn.execute("""
+        SELECT symbol, horizon, action, target_price, trailing_pe, forward_pe, thesis, source, updated_at
+        FROM recommendations
+        WHERE symbol = ?
+    """, (symbol.upper(),))
+    rows = _rows_to_dicts(cursor)
+    conn.close()
+    return {row["horizon"]: row for row in rows}

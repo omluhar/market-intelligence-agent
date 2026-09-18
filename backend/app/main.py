@@ -9,7 +9,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.app.collectors.news_collector import fetch_macro_headlines
-from backend.app.collectors.technical_collector import fetch_ohlcv
 from backend.app.execution.sandbox_router import (
     add_to_watchlist,
     get_order_history,
@@ -18,6 +17,7 @@ from backend.app.execution.sandbox_router import (
     remove_from_watchlist,
 )
 from backend.app.services.council_service import evaluate_symbol
+from backend.app.services.market_cache import cached_history_bundle, load_overview
 from backend.app.services.scheduler_service import run_market_sweep, shutdown_scheduler, start_scheduler
 from backend.app.config import settings
 
@@ -43,25 +43,6 @@ app.add_middleware(
 )
 
 
-class ScanResponse(BaseModel):
-    ticker: str
-    snapshot: Dict[str, Any]
-    technical: Dict[str, Any]
-    news: List[Dict[str, Any]]
-    proposal: Any = None
-    tactical: Any = None
-    risk: Any = None
-    tactical_risk: Any = None
-    order: Any = None
-    tactical_order: Any = None
-    dry_run: bool
-    message: str
-
-
-class WatchlistRequest(BaseModel):
-    symbol: str
-
-
 class HistoryBar(BaseModel):
     time: str
     open: float
@@ -69,6 +50,27 @@ class HistoryBar(BaseModel):
     low: float
     close: float
     volume: float
+
+
+class ScanResponse(BaseModel):
+    ticker: str
+    snapshot: Dict[str, Any]
+    technical: Dict[str, Any]
+    news: List[Dict[str, Any]]
+    history: List[HistoryBar] = []
+    proposal: Any = None
+    tactical: Any = None
+    risk: Any = None
+    tactical_risk: Any = None
+    order: Any = None
+    tactical_order: Any = None
+    dry_run: bool
+    view_only: bool = False
+    message: str
+
+
+class WatchlistRequest(BaseModel):
+    symbol: str
 
 
 class SweepResponse(BaseModel):
@@ -111,10 +113,20 @@ def fetch_macro():
 def fetch_history(ticker: str):
     symbol = ticker.upper().strip()
     try:
-        return fetch_ohlcv(symbol)
+        return cached_history_bundle(symbol)["history"]
     except Exception as exc:
         logger.exception("History fetch failed for %s", symbol)
         raise HTTPException(status_code=502, detail=f"History fetch failed for {symbol}: {exc}")
+
+
+@app.get("/api/v1/overview/{ticker}", response_model=ScanResponse)
+def ticker_overview(ticker: str):
+    symbol = ticker.upper().strip()
+    try:
+        return ScanResponse.model_validate(load_overview(symbol))
+    except Exception as exc:
+        logger.exception("Overview failed for %s", symbol)
+        raise HTTPException(status_code=502, detail=f"Overview failed for {symbol}: {exc}")
 
 
 @app.post("/api/v1/scan/{ticker}", response_model=ScanResponse)

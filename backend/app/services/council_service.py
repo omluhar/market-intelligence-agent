@@ -4,24 +4,11 @@ from typing import Any, Dict, List, Optional
 from backend.app.agents.risk_guardian import RiskEvaluation, evaluate_trade
 from backend.app.agents.scout_agent import run_scout
 from backend.app.agents.tactical_agent import run_tactical, tactical_to_trade_proposal
-from backend.app.collectors.news_collector import fetch_ticker_news
-from backend.app.collectors.price_collector import fetch_market_snapshot
-from backend.app.collectors.technical_collector import fetch_technical_snapshot
 from backend.app.config import settings
 from backend.app.execution.sandbox_router import execute_order, save_recommendation
+from backend.app.services.market_cache import EMPTY_TECHNICAL, load_market_bundle
 
 logger = logging.getLogger(__name__)
-
-EMPTY_TECHNICAL: Dict[str, Any] = {
-    "sma_50": None,
-    "sma_200": None,
-    "rsi_14": None,
-    "volume_surge_ratio": None,
-    "trend": "NEUTRAL",
-    "last_price": 0.0,
-    "drawdown_from_high_pct": None,
-    "golden_cross": None,
-}
 
 
 def _short_pass_risk() -> Dict[str, Any]:
@@ -42,14 +29,11 @@ def evaluate_symbol(
     source: str = "SCAN",
 ) -> Dict[str, Any]:
     symbol = ticker.upper().strip()
-    snapshot = fetch_market_snapshot(symbol)
-    news: List[Dict[str, Any]] = fetch_ticker_news(symbol) if include_news else []
-
-    try:
-        technical = fetch_technical_snapshot(symbol)
-    except Exception as exc:
-        logger.warning("Technical snapshot failed for %s: %s", symbol, exc)
-        technical = dict(EMPTY_TECHNICAL)
+    bundle = load_market_bundle(symbol, include_news=include_news)
+    snapshot = bundle["snapshot"]
+    technical = bundle["technical"] or dict(EMPTY_TECHNICAL)
+    news: List[Dict[str, Any]] = bundle["news"] if include_news else []
+    history = bundle.get("history") or []
 
     last_price = float(snapshot.get("last_price") or technical.get("last_price") or 0.0)
 
@@ -113,7 +97,9 @@ def evaluate_symbol(
         "tactical_risk": tactical_risk.model_dump() if tactical_risk else None,
         "order": scout_order,
         "tactical_order": tactical_order,
+        "history": history,
         "dry_run": settings.DRY_RUN,
+        "view_only": False,
         "message": message,
     }
 

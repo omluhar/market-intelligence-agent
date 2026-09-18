@@ -7,6 +7,7 @@ import {
   HistogramSeries,
   createChart,
   type IChartApi,
+  type ISeriesApi,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -40,10 +41,12 @@ export default function StockChart({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const candlesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
 
   useEffect(() => {
     const node = containerRef.current;
-    if (!node || data.length === 0) {
+    if (!node) {
       return;
     }
 
@@ -80,7 +83,6 @@ export default function StockChart({
       wickUpColor: "#34d399",
       wickDownColor: "#f87171",
     });
-
     const volume = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
@@ -88,24 +90,6 @@ export default function StockChart({
     chart.priceScale("volume").applyOptions({
       scaleMargins: { top: 0.78, bottom: 0 },
     });
-
-    candles.setData(
-      data.map((bar) => ({
-        time: toChartTime(bar.time),
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-      }))
-    );
-    volume.setData(
-      data.map((bar) => ({
-        time: toChartTime(bar.time),
-        value: bar.volume,
-        color: bar.close >= bar.open ? "rgba(52, 211, 153, 0.35)" : "rgba(248, 113, 113, 0.35)",
-      }))
-    );
-    chart.timeScale().fitContent();
 
     const observer = new ResizeObserver(() => {
       if (!containerRef.current) {
@@ -115,13 +99,45 @@ export default function StockChart({
     });
     observer.observe(node);
     chartRef.current = chart;
+    candlesRef.current = candles;
+    volumeRef.current = volume;
 
     return () => {
       observer.disconnect();
       chart.remove();
       chartRef.current = null;
+      candlesRef.current = null;
+      volumeRef.current = null;
     };
-  }, [data, height]);
+  }, [height]);
+
+  useEffect(() => {
+    if (!candlesRef.current || !volumeRef.current || !chartRef.current) {
+      return;
+    }
+    if (data.length === 0) {
+      candlesRef.current.setData([]);
+      volumeRef.current.setData([]);
+      return;
+    }
+    candlesRef.current.setData(
+      data.map((bar) => ({
+        time: toChartTime(bar.time),
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      }))
+    );
+    volumeRef.current.setData(
+      data.map((bar) => ({
+        time: toChartTime(bar.time),
+        value: bar.volume,
+        color: bar.close >= bar.open ? "rgba(52, 211, 153, 0.35)" : "rgba(248, 113, 113, 0.35)",
+      }))
+    );
+    chartRef.current.timeScale().fitContent();
+  }, [data]);
 
   if (data.length === 0) {
     return (

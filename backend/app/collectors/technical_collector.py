@@ -56,8 +56,7 @@ def _rsi_wilder(close: pd.Series, period: int = 14) -> pd.Series:
     return rsi.where(avg_loss != 0, 100.0)
 
 
-def fetch_technical_snapshot(ticker: str) -> TechnicalSnapshot:
-    hist = fetch_history_df(ticker, period="1y")
+def technical_from_df(hist: pd.DataFrame) -> TechnicalSnapshot:
     close = hist["Close"].astype(float)
     high = hist["High"].astype(float)
     volume = hist["Volume"].astype(float)
@@ -101,23 +100,28 @@ def fetch_technical_snapshot(ticker: str) -> TechnicalSnapshot:
     }
 
 
-def fetch_ohlcv(ticker: str, period: str = "1y") -> List[Dict[str, Any]]:
-    hist = fetch_history_df(ticker, period=period)
+def ohlcv_from_df(hist: pd.DataFrame) -> List[OhlcvBar]:
+    index = pd.DatetimeIndex(hist.index)
+    if index.tz is not None:
+        index = index.tz_convert("UTC").tz_localize(None)
     bars: List[OhlcvBar] = []
-    for idx, row in hist.iterrows():
-        stamp = pd.Timestamp(idx)
-        if stamp.tzinfo is not None:
-            stamp = stamp.tz_convert("UTC").tz_localize(None)
-        open_px = _finite(row.get("Open"))
-        high_px = _finite(row.get("High"))
-        low_px = _finite(row.get("Low"))
-        close_px = _finite(row.get("Close"))
-        volume = _finite(row.get("Volume"))
+    opens = hist["Open"].to_numpy()
+    highs = hist["High"].to_numpy()
+    lows = hist["Low"].to_numpy()
+    closes = hist["Close"].to_numpy()
+    volumes = hist["Volume"].to_numpy()
+    dates = index.strftime("%Y-%m-%d")
+    for i in range(len(hist)):
+        open_px = _finite(opens[i])
+        high_px = _finite(highs[i])
+        low_px = _finite(lows[i])
+        close_px = _finite(closes[i])
+        volume = _finite(volumes[i])
         if None in (open_px, high_px, low_px, close_px):
             continue
         bars.append(
             {
-                "time": stamp.strftime("%Y-%m-%d"),
+                "time": str(dates[i]),
                 "open": round(open_px, 4),
                 "high": round(high_px, 4),
                 "low": round(low_px, 4),
@@ -126,3 +130,11 @@ def fetch_ohlcv(ticker: str, period: str = "1y") -> List[Dict[str, Any]]:
             }
         )
     return bars
+
+
+def fetch_technical_snapshot(ticker: str) -> TechnicalSnapshot:
+    return technical_from_df(fetch_history_df(ticker, period="1y"))
+
+
+def fetch_ohlcv(ticker: str, period: str = "1y") -> List[Dict[str, Any]]:
+    return ohlcv_from_df(fetch_history_df(ticker, period=period))
