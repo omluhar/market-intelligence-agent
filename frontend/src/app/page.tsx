@@ -17,12 +17,24 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import DeskChat from "@/components/DeskChat";
 import StockChart, { type OhlcvBar } from "@/components/StockChart";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ??
   (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "");
 const POLL_MS = 12_000;
+
+const CHART_INTERVALS = [
+  { label: "5m", interval: "5m", period: "5d" },
+  { label: "15m", interval: "15m", period: "60d" },
+  { label: "1H", interval: "60m", period: "3mo" },
+  { label: "1D", interval: "1d", period: "1y" },
+  { label: "1W", interval: "1wk", period: "5y" },
+  { label: "1M", interval: "1mo", period: "max" },
+] as const;
+
+const INTRADAY_INTERVALS = new Set(["5m", "15m", "60m", "1h"]);
 
 interface Snapshot {
   symbol: string;
@@ -152,13 +164,17 @@ export default function Dashboard() {
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [chartData, setChartData] = useState<OhlcvBar[]>([]);
+  const [chartInterval, setChartInterval] = useState<(typeof CHART_INTERVALS)[number]["interval"]>("1d");
   const [error, setError] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(false);
   const requestIdRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const chartIntervalRef = useRef(chartInterval);
+  chartIntervalRef.current = chartInterval;
 
   const applyOverview = useCallback((data: ScanResult) => {
     setScanData(data);
-    if (data.history?.length) {
+    if (chartIntervalRef.current === "1d" && data.history?.length) {
       setChartData(data.history);
     }
   }, []);
@@ -201,10 +217,15 @@ export default function Dashboard() {
     }
   }, []);
 
-  const fetchHistory = useCallback(async (symbol: string) => {
+  const fetchHistory = useCallback(async (symbol: string, interval: string, period: string) => {
+    const requestId = ++historyRequestRef.current;
     setChartLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/v1/history/${symbol}`);
+      const params = new URLSearchParams({ interval, period });
+      const res = await fetch(`${API_BASE}/api/v1/history/${symbol}?${params.toString()}`);
+      if (requestId !== historyRequestRef.current) {
+        return;
+      }
       if (!res.ok) {
         setChartData([]);
         return;
@@ -213,9 +234,13 @@ export default function Dashboard() {
       setChartData(data);
     } catch (err) {
       console.error("History fetch error:", err);
-      setChartData([]);
+      if (requestId === historyRequestRef.current) {
+        setChartData([]);
+      }
     } finally {
-      setChartLoading(false);
+      if (requestId === historyRequestRef.current) {
+        setChartLoading(false);
+      }
     }
   }, []);
 
@@ -298,10 +323,8 @@ export default function Dashboard() {
         const data: ScanResult = await res.json();
         overviewCache.set(symbol, data);
         setScanData(data);
-        if (data.history?.length) {
+        if (chartIntervalRef.current === "1d" && data.history?.length) {
           setChartData(data.history);
-        } else {
-          await fetchHistory(symbol);
         }
         await Promise.all([fetchOrders(), fetchRecommendations()]);
       } catch (err: unknown) {
@@ -310,7 +333,7 @@ export default function Dashboard() {
         setLoading(false);
       }
     },
-    [fetchHistory, fetchOrders, fetchRecommendations]
+    [fetchOrders, fetchRecommendations]
   );
 
   const triggerSweep = useCallback(async () => {
@@ -386,6 +409,15 @@ export default function Dashboard() {
     });
   }, [prefetchTicker, watchlist]);
 
+  useEffect(() => {
+    const symbol = scanData?.ticker;
+    if (!symbol) {
+      return;
+    }
+    const spec = CHART_INTERVALS.find((item) => item.interval === chartInterval) ?? CHART_INTERVALS[3];
+    void fetchHistory(symbol, spec.interval, spec.period);
+  }, [scanData?.ticker, chartInterval, fetchHistory]);
+
   const technical = scanData?.technical;
 
   return (
@@ -397,7 +429,8 @@ export default function Dashboard() {
             <h1 className="text-xl font-bold tracking-tight">MARKET INTELLIGENCE COUNCIL</h1>
           </div>
           <p className="text-xs text-neutral-400 mt-1">
-            Dual-horizon desk: fundamental scout, tactical momentum, deterministic risk sandbox
+            Dual-horizon desk: fundamental scout, tactical momentum, deterministic risk sandbox.
+            Use Ask the desk if a panel is unclear.
           </p>
         </div>
 
@@ -417,6 +450,7 @@ export default function Dashboard() {
             onClick={() => runScan(ticker)}
             disabled={loading}
             className="flex items-center gap-1.5 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-all"
+            title="Run Scout + Tactical + Risk Guardian. May record a simulated order."
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             Scan
@@ -426,6 +460,7 @@ export default function Dashboard() {
 
       <div className="max-w-7xl mx-auto mt-4 flex flex-wrap items-center gap-2">
         <span className="text-[10px] uppercase tracking-wide text-neutral-500 font-semibold">Watchlist</span>
+        <span className="text-[10px] text-neutral-600">Click to load quotes. Scan is separate.</span>
         {watchlist.map((symbol) => (
           <div
             key={symbol}
@@ -475,6 +510,9 @@ export default function Dashboard() {
                   <span className="text-xs font-semibold px-2 py-0.5 rounded bg-neutral-800 text-neutral-300">
                     L1 TELEMETRY
                   </span>
+                  <p className="text-[11px] text-neutral-500 mt-1">
+                    Live quote and ratios. Candle size below does not re-run the agents.
+                  </p>
                   <h2 className="text-3xl font-extrabold mt-2 tracking-tight">{scanData.snapshot.symbol}</h2>
                   <p className="text-2xl font-semibold text-neutral-200 mt-1">
                     {formatUsd(scanData.snapshot.last_price)}
@@ -517,21 +555,55 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="mt-5 relative">
-                {chartLoading && (
-                  <div className="absolute inset-0 z-10 flex items-center justify-center text-xs text-neutral-500 bg-neutral-950/40 rounded-lg">
-                    Loading chart…
-                  </div>
-                )}
-                <StockChart data={chartData} height={280} />
+              <div className="mt-5">
+                <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                  <span className="text-[10px] uppercase tracking-wide text-neutral-500 font-semibold mr-1">
+                    Candles
+                  </span>
+                  {CHART_INTERVALS.map((item) => (
+                    <button
+                      key={item.interval}
+                      onClick={() => setChartInterval(item.interval)}
+                      className={`text-[11px] px-2 py-1 rounded-md border ${
+                        chartInterval === item.interval
+                          ? "bg-orange-950 border-orange-700 text-orange-200"
+                          : "bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-neutral-200"
+                      }`}
+                      title={`${item.label} bars over ${item.period}`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="relative">
+                  {chartLoading && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center text-xs text-neutral-500 bg-neutral-950/40 rounded-lg">
+                      Loading chart…
+                    </div>
+                  )}
+                  <StockChart
+                    data={chartData}
+                    height={280}
+                    timeVisible={INTRADAY_INTERVALS.has(chartInterval)}
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-4 border-t border-neutral-800/80">
-                <Metric label="Trailing P/E" value={scanData.snapshot.trailing_pe?.toFixed(2) ?? "N/A"} />
-                <Metric label="Forward P/E" value={scanData.snapshot.forward_pe?.toFixed(2) ?? "N/A"} />
+                <Metric
+                  label="Trailing P/E"
+                  value={scanData.snapshot.trailing_pe?.toFixed(2) ?? "N/A"}
+                  hint="Price vs the last 12 months of earnings."
+                />
+                <Metric
+                  label="Forward P/E"
+                  value={scanData.snapshot.forward_pe?.toFixed(2) ?? "N/A"}
+                  hint="Price vs expected next-year earnings."
+                />
                 <Metric
                   label="Debt / Equity"
                   value={scanData.snapshot.debt_to_equity ? `${scanData.snapshot.debt_to_equity.toFixed(1)}%` : "N/A"}
+                  hint="Leverage. Yahoo often stores this as a percent."
                 />
                 <Metric
                   label="Free Cash Flow"
@@ -540,13 +612,27 @@ export default function Dashboard() {
                       ? `$${(scanData.snapshot.free_cashflow / 1e9).toFixed(1)}B`
                       : "N/A"
                   }
+                  hint="Cash left after operations and capex."
                 />
-                <Metric label="SMA 50" value={technical?.sma_50 ? formatUsd(technical.sma_50) : "N/A"} />
-                <Metric label="SMA 200" value={technical?.sma_200 ? formatUsd(technical.sma_200) : "N/A"} />
-                <Metric label="RSI 14" value={technical?.rsi_14 ? technical.rsi_14.toFixed(1) : "N/A"} />
+                <Metric
+                  label="SMA 50"
+                  value={technical?.sma_50 ? formatUsd(technical.sma_50) : "N/A"}
+                  hint="50-day average price. Calculated on daily bars."
+                />
+                <Metric
+                  label="SMA 200"
+                  value={technical?.sma_200 ? formatUsd(technical.sma_200) : "N/A"}
+                  hint="200-day average price. Golden cross = 50 above 200."
+                />
+                <Metric
+                  label="RSI 14"
+                  value={technical?.rsi_14 ? technical.rsi_14.toFixed(1) : "N/A"}
+                  hint="Momentum 0–100. ~70 overbought, ~30 oversold."
+                />
                 <Metric
                   label="Vol Surge"
                   value={technical?.volume_surge_ratio ? `${technical.volume_surge_ratio.toFixed(2)}x` : "N/A"}
+                  hint="Today’s volume vs the 20-day average."
                 />
               </div>
             </div>
@@ -559,6 +645,7 @@ export default function Dashboard() {
                 <h3 className="text-sm font-semibold tracking-wide uppercase">Fundamental Scout</h3>
                 <span className="ml-auto text-[10px] uppercase text-neutral-500">Long Horizon</span>
               </div>
+              <p className="text-[11px] text-neutral-500 mb-3">Valuation agent (P/E, debt). Click Scan to generate a thesis.</p>
               {scanData?.proposal ? (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
@@ -575,9 +662,9 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="bg-neutral-950/80 border border-neutral-800/80 p-3 rounded-lg text-xs text-neutral-400">
-                  {scanData.view_only
+                  {scanData?.view_only
                     ? "Click Scan to run the council on this name."
-                    : scanData.message || "No scan performed yet."}
+                    : scanData?.message || "No scan performed yet."}
                 </div>
               )}
             </div>
@@ -588,6 +675,7 @@ export default function Dashboard() {
                 <h3 className="text-sm font-semibold tracking-wide uppercase">Tactical Momentum</h3>
                 <span className="ml-auto text-[10px] uppercase text-neutral-500">Short Horizon</span>
               </div>
+              <p className="text-[11px] text-neutral-500 mb-3">Short-term rules using RSI, trend, and volume surge.</p>
               {scanData?.tactical ? (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -621,6 +709,9 @@ export default function Dashboard() {
               <ShieldCheck className="h-4 w-4 text-cyan-400" />
               <h3 className="text-sm font-semibold tracking-wide uppercase">Risk Guardian</h3>
             </div>
+            <p className="text-[11px] text-neutral-500 mb-3">
+              Hard position-size caps. Approved/vetoed is a sandbox check, not a live broker.
+            </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <RiskPanel title="Scout book" risk={scanData?.risk ?? null} empty="Awaiting scout proposal." />
               <RiskPanel title="Tactical book" risk={scanData?.tactical_risk ?? null} empty="Awaiting tactical proposal." />
@@ -632,6 +723,7 @@ export default function Dashboard() {
               <Newspaper className="h-4 w-4 text-neutral-400" />
               <h3 className="text-sm font-semibold tracking-wide uppercase">Ticker News</h3>
             </div>
+            <p className="text-[11px] text-neutral-500 mb-3">Recent headlines used as context for the scout.</p>
             {scanData?.news?.length ? (
               <ul className="space-y-2">
                 {scanData.news.map((item) => (
@@ -664,11 +756,15 @@ export default function Dashboard() {
                 onClick={() => void triggerSweep()}
                 disabled={sweeping}
                 className="shrink-0 flex items-center gap-1 text-[10px] font-semibold uppercase bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 px-2.5 py-1 rounded-md"
+                title="Background scan of the watchlist plus a discovery universe."
               >
                 <Sparkles className={`h-3 w-3 ${sweeping ? "animate-spin" : ""}`} />
                 {sweeping ? "Sweeping" : "Trigger Sweep"}
               </button>
             </div>
+            <p className="text-[11px] text-neutral-500 mt-2">
+              Saved ideas from scans and sweeps. Click a name to load quotes.
+            </p>
             <div className="flex-1 overflow-y-auto mt-4 space-y-3 pr-1">
               {recsLoading ? (
                 <p className="text-xs text-neutral-500 text-center py-12">Loading recommendations…</p>
@@ -708,6 +804,7 @@ export default function Dashboard() {
                 DuckDB (Local)
               </span>
             </div>
+            <p className="text-[11px] text-neutral-500 mt-2">Simulated fills only. Nothing is sent to a real broker.</p>
             <div className="flex-1 overflow-y-auto mt-4 space-y-3 pr-1">
               {orders.length === 0 ? (
                 <p className="text-xs text-neutral-500 text-center py-12">No simulated orders recorded yet.</p>
@@ -744,15 +841,30 @@ export default function Dashboard() {
           </div>
         </div>
       </main>
+      <DeskChat
+        apiBase={API_BASE}
+        context={{
+          ticker: scanData?.ticker ?? ticker,
+          chart_interval: chartInterval,
+          snapshot: scanData?.snapshot ?? null,
+          technical: scanData?.technical ?? null,
+          proposal: scanData?.proposal ?? null,
+          tactical: scanData?.tactical ?? null,
+          risk: scanData?.risk ?? null,
+          tactical_risk: scanData?.tactical_risk ?? null,
+          view_only: scanData?.view_only,
+        }}
+      />
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="bg-neutral-950/60 border border-neutral-800/60 p-3 rounded-lg">
+    <div className="bg-neutral-950/60 border border-neutral-800/60 p-3 rounded-lg" title={hint}>
       <span className="text-[11px] text-neutral-500 block uppercase">{label}</span>
       <span className="text-base font-bold text-neutral-200">{value}</span>
+      {hint && <span className="text-[10px] text-neutral-600 mt-1 block leading-snug">{hint}</span>}
     </div>
   );
 }

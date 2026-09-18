@@ -82,13 +82,13 @@ def cached_snapshot(symbol: str) -> Dict[str, Any]:
     return _coalesce(key, _load)
 
 
-def cached_history_bundle(symbol: str) -> Dict[str, Any]:
-    key = f"history:{symbol}"
+def cached_history_bundle(symbol: str, interval: str = "1d", period: str = "1y") -> Dict[str, Any]:
+    key = f"history:{symbol}:{interval}:{period}"
 
     def _load() -> Dict[str, Any]:
-        hist = fetch_history_df(symbol, period="1y")
+        hist = fetch_history_df(symbol, period=period, interval=interval)
         payload = {
-            "technical": technical_from_df(hist),
+            "technical": technical_from_df(hist) if interval in {"1d", "1wk", "1mo"} else None,
             "history": ohlcv_from_df(hist),
         }
         return _cache_set(key, payload, HISTORY_TTL_SEC)
@@ -129,7 +129,7 @@ def load_market_bundle(symbol: str, include_news: bool = True) -> Dict[str, Any]
 
     try:
         history_bundle = history_future.result(timeout=FETCH_TIMEOUT_SEC)
-        technical = history_bundle["technical"]
+        technical = history_bundle["technical"] or dict(EMPTY_TECHNICAL)
         history = history_bundle["history"]
     except Exception as exc:
         logger.warning("History failed for %s: %s", ticker, exc)

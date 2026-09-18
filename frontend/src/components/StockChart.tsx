@@ -35,14 +35,18 @@ function toChartTime(value: string): Time {
 export default function StockChart({
   data,
   height = 280,
+  timeVisible = false,
 }: {
   data: OhlcvBar[];
   height?: number;
+  timeVisible?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candlesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const dataRef = useRef(data);
+  dataRef.current = data;
 
   useEffect(() => {
     const node = containerRef.current;
@@ -65,7 +69,8 @@ export default function StockChart({
       autoSize: false,
       timeScale: {
         borderColor: "#262626",
-        timeVisible: false,
+        timeVisible,
+        secondsVisible: false,
       },
       rightPriceScale: {
         borderColor: "#262626",
@@ -102,6 +107,27 @@ export default function StockChart({
     candlesRef.current = candles;
     volumeRef.current = volume;
 
+    const current = dataRef.current;
+    if (current.length) {
+      candles.setData(
+        current.map((bar) => ({
+          time: toChartTime(bar.time),
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+        }))
+      );
+      volume.setData(
+        current.map((bar) => ({
+          time: toChartTime(bar.time),
+          value: bar.volume,
+          color: bar.close >= bar.open ? "rgba(52, 211, 153, 0.35)" : "rgba(248, 113, 113, 0.35)",
+        }))
+      );
+      chart.timeScale().fitContent();
+    }
+
     return () => {
       observer.disconnect();
       chart.remove();
@@ -109,7 +135,7 @@ export default function StockChart({
       candlesRef.current = null;
       volumeRef.current = null;
     };
-  }, [height]);
+  }, [height, timeVisible]);
 
   useEffect(() => {
     if (!candlesRef.current || !volumeRef.current || !chartRef.current) {

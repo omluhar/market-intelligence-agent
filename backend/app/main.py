@@ -1,13 +1,14 @@
 from pathlib import Path
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from backend.app.agents.desk_guide import DeskChatRequest, DeskChatResponse, answer_desk_question
 from backend.app.collectors.news_collector import fetch_macro_headlines
 from backend.app.execution.sandbox_router import (
     add_to_watchlist,
@@ -77,6 +78,17 @@ class SweepResponse(BaseModel):
     status: Literal["sweep triggered", "sweep already running"]
 
 
+INTERVAL_PERIODS = {
+    "5m": "5d",
+    "15m": "60d",
+    "60m": "3mo",
+    "1h": "3mo",
+    "1d": "1y",
+    "1wk": "5y",
+    "1mo": "max",
+}
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "dry_run": settings.DRY_RUN}
@@ -110,10 +122,18 @@ def fetch_macro():
 
 
 @app.get("/api/v1/history/{ticker}", response_model=List[HistoryBar])
-def fetch_history(ticker: str):
+def fetch_history(
+    ticker: str,
+    interval: str = Query("1d"),
+    period: Optional[str] = Query(None),
+):
     symbol = ticker.upper().strip()
+    candle = interval.strip().lower()
+    if candle not in INTERVAL_PERIODS:
+        raise HTTPException(status_code=400, detail=f"Unsupported interval: {interval}")
+    lookback = (period or INTERVAL_PERIODS[candle]).strip()
     try:
-        return cached_history_bundle(symbol)["history"]
+        return cached_history_bundle(symbol, interval=candle, period=lookback)["history"]
     except Exception as exc:
         logger.exception("History fetch failed for %s", symbol)
         raise HTTPException(status_code=502, detail=f"History fetch failed for {symbol}: {exc}")
@@ -152,6 +172,15 @@ def trigger_sweep():
     if not started:
         return SweepResponse(status="sweep already running")
     return SweepResponse(status="sweep triggered")
+
+
+@app.post("/api/v1/desk-chat", response_model=DeskChatResponse)
+def desk_chat(req: DeskChatRequest):
+    try:
+        return DeskChatResponse(reply=answer_desk_question(req))
+    except Exception as exc:
+        logger.exception("Desk guide failed")
+        raise HTTPException(status_code=502, detail=f"Desk guide failed: {exc}")
 
 
 @app.get("/api/v1/orders")

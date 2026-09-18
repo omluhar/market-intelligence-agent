@@ -35,11 +35,11 @@ def _finite(value: Any) -> Optional[float]:
     return number
 
 
-def fetch_history_df(ticker: str, period: str = "1y") -> pd.DataFrame:
+def fetch_history_df(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     stock = yf.Ticker(ticker)
-    hist = stock.history(period=period, auto_adjust=True)
+    hist = stock.history(period=period, interval=interval, auto_adjust=True)
     if hist is None or hist.empty:
-        raise ValueError(f"No historical bars returned for {ticker}")
+        raise ValueError(f"No historical bars returned for {ticker} ({interval}/{period})")
     if isinstance(hist.columns, pd.MultiIndex):
         hist.columns = hist.columns.get_level_values(0)
     return hist
@@ -102,15 +102,21 @@ def technical_from_df(hist: pd.DataFrame) -> TechnicalSnapshot:
 
 def ohlcv_from_df(hist: pd.DataFrame) -> List[OhlcvBar]:
     index = pd.DatetimeIndex(hist.index)
-    if index.tz is not None:
-        index = index.tz_convert("UTC").tz_localize(None)
+    naive = index.tz_localize(None) if index.tz is None else index.tz_convert("UTC").tz_localize(None)
+    intraday = False
+    if len(naive) >= 2:
+        intraday = (naive[1] - naive[0]).total_seconds() < 20 * 3600
+    if intraday:
+        utc_index = index.tz_convert("UTC") if index.tz is not None else index.tz_localize("UTC")
+        times = utc_index.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        times = naive.strftime("%Y-%m-%d")
     bars: List[OhlcvBar] = []
     opens = hist["Open"].to_numpy()
     highs = hist["High"].to_numpy()
     lows = hist["Low"].to_numpy()
     closes = hist["Close"].to_numpy()
     volumes = hist["Volume"].to_numpy()
-    dates = index.strftime("%Y-%m-%d")
     for i in range(len(hist)):
         open_px = _finite(opens[i])
         high_px = _finite(highs[i])
@@ -121,7 +127,7 @@ def ohlcv_from_df(hist: pd.DataFrame) -> List[OhlcvBar]:
             continue
         bars.append(
             {
-                "time": str(dates[i]),
+                "time": str(times[i]),
                 "open": round(open_px, 4),
                 "high": round(high_px, 4),
                 "low": round(low_px, 4),
@@ -136,5 +142,5 @@ def fetch_technical_snapshot(ticker: str) -> TechnicalSnapshot:
     return technical_from_df(fetch_history_df(ticker, period="1y"))
 
 
-def fetch_ohlcv(ticker: str, period: str = "1y") -> List[Dict[str, Any]]:
-    return ohlcv_from_df(fetch_history_df(ticker, period=period))
+def fetch_ohlcv(ticker: str, period: str = "1y", interval: str = "1d") -> List[Dict[str, Any]]:
+    return ohlcv_from_df(fetch_history_df(ticker, period=period, interval=interval))
