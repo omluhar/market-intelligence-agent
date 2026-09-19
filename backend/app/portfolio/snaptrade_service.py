@@ -8,17 +8,31 @@ from backend.app.portfolio.portfolio_store import AccountType, get_portfolio_use
 
 logger = logging.getLogger(__name__)
 
+# Set when SnapTrade rejects registerUser with code 1012 (personal keys).
+_detected_personal_keys = False
+
 
 def snaptrade_configured() -> bool:
     return bool(settings.SNAPTRADE_CLIENT_ID and settings.SNAPTRADE_CONSUMER_KEY)
 
 
 def auth_mode() -> str:
-    return (settings.SNAPTRADE_AUTH_MODE or "commercial").strip().lower()
+    if _detected_personal_keys:
+        return "personal"
+    return (settings.SNAPTRADE_AUTH_MODE or "personal").strip().lower()
 
 
 def is_personal_auth() -> bool:
     return auth_mode() == "personal"
+
+
+def _is_personal_key_error(exc: Exception) -> bool:
+    text = str(exc)
+    return (
+        "1012" in text
+        or "Personal SnapTrade keys" in text
+        or "registerUser is not available" in text
+    )
 
 
 def _response_body(response: Any) -> Any:
@@ -40,13 +54,14 @@ def _field(obj: Any, *names: str) -> Any:
     return None
 
 
-def _client():
+def _client(*, force_personal: bool = False):
     if not snaptrade_configured():
         raise RuntimeError("SnapTrade is not configured. Set SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY.")
     from snaptrade_client import SnapTrade
     from snaptrade_client.auth import SnapTradeAuth
 
-    if is_personal_auth():
+    personal = force_personal or is_personal_auth()
+    if personal:
         auth = SnapTradeAuth.personal_api_key(
             consumer_key=settings.SNAPTRADE_CONSUMER_KEY,
             client_id=settings.SNAPTRADE_CLIENT_ID,
@@ -59,10 +74,10 @@ def _client():
     return SnapTrade(auth=auth)
 
 
-def _user_credentials() -> Tuple[Optional[str], Optional[str]]:
-    if is_personal_auth():
+def _user_credentials(*, force_personal: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    if force_personal or is_personal_auth():
         return None, None
-    return ensure_snaptrade_user()
+    return ensure_snaptrade_user(force_personal=force_personal)
 
 
 def _infer_account_type(name: str) -> AccountType:
@@ -76,18 +91,30 @@ def _infer_account_type(name: str) -> AccountType:
     return "other"
 
 
-def ensure_snaptrade_user() -> Tuple[str, str]:
+def ensure_snaptrade_user(*, force_personal: bool = False) -> Tuple[str, str]:
+    if force_personal or is_personal_auth():
+        raise RuntimeError("Personal SnapTrade keys do not use registerUser.")
+
     existing = get_portfolio_user()
     if existing:
         return str(existing["id"]), str(existing["user_secret"])
 
-    client = _client()
+    client = _client(force_personal=False)
     user_id = f"mic-{uuid.uuid4().hex[:20]}"
     from snaptrade_client.model.snap_trade_register_user_request_body import SnapTradeRegisterUserRequestBody
 
-    response = client.authentication.register_snap_trade_user(
-        body=SnapTradeRegisterUserRequestBody(userId=user_id)
-    )
+    try:
+        response = client.authentication.register_snap_trade_user(
+            body=SnapTradeRegisterUserRequestBody(userId=user_id)
+        )
+    except Exception as exc:
+        if _is_personal_key_error(exc):
+            global _detected_personal_keys
+            _detected_personal_keys = True
+            logger.info("SnapTrade keys are personal; skipping registerUser.")
+            raise
+        raise
+
     body = _response_body(response)
     user_secret = _field(body, "userSecret", "user_secret")
     if not user_secret:
@@ -96,9 +123,9 @@ def ensure_snaptrade_user() -> Tuple[str, str]:
     return user_id, str(user_secret)
 
 
-def create_connection_portal_url(*, redirect_url: Optional[str] = None) -> Dict[str, str]:
-    user_id, user_secret = _user_credentials()
-    client = _client()
+def _portal_login(*, redirect_url: Optional[str], force_personal: bool) -> Dict[str, str]:
+    user_id, user_secret = _user_credentials(force_personal=force_personal)
+    client = _client(force_personal=force_personal)
     kwargs: Dict[str, Any] = {
         "connection_type": "read",
         "connection_portal_version": "v4",
@@ -120,6 +147,21 @@ def create_connection_portal_url(*, redirect_url: Optional[str] = None) -> Dict[
     }
 
 
+def create_connection_portal_url(*, redirect_url: Optional[str] = None) -> Dict[str, str]:
+    if is_personal_auth():
+        return _portal_login(redirect_url=redirect_url, force_personal=True)
+
+    try:
+        return _portal_login(redirect_url=redirect_url, force_personal=False)
+    except Exception as exc:
+        if not _is_personal_key_error(exc):
+            raise
+        global _detected_personal_keys
+        _detected_personal_keys = True
+        logger.info("Retrying Robinhood connect using personal SnapTrade key flow.")
+        return _portal_login(redirect_url=redirect_url, force_personal=True)
+
+
 def _symbol_from_position(position: Dict[str, Any]) -> Optional[str]:
     symbol_obj = position.get("symbol") if isinstance(position, dict) else _field(position, "symbol")
     if isinstance(symbol_obj, dict):
@@ -135,12 +177,15 @@ def _symbol_from_position(position: Dict[str, Any]) -> Optional[str]:
 def _as_dict(row: Any) -> Dict[str, Any]:
     if isinstance(row, dict):
         return row
+    if hasattr(row, "to_dict"):
+        return row.to_dict()
     return {key: getattr(row, key) for key in dir(row) if not key.startswith("_")}
 
 
 def sync_robinhood_holdings() -> Dict[str, Any]:
-    user_id, user_secret = _user_credentials()
-    client = _client()
+    force_personal = is_personal_auth()
+    user_id, user_secret = _user_credentials(force_personal=force_personal)
+    client = _client(force_personal=force_personal)
     account_kwargs: Dict[str, Any] = {}
     if user_id and user_secret:
         account_kwargs["user_id"] = user_id

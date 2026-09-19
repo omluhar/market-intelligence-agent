@@ -232,9 +232,8 @@ export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (sy
         {data?.snaptrade_configured && (
           <div className="mt-4 text-xs text-neutral-500">
             SnapTrade auth mode:{" "}
-            <span className="text-neutral-300">{data.snaptrade_auth_mode ?? "commercial"}</span>. If connect
-            fails, try setting <code className="text-neutral-300">SNAPTRADE_AUTH_MODE=personal</code> in Render
-            when using a Personal API key.
+            <span className="text-neutral-300">{data.snaptrade_auth_mode ?? "personal"}</span>. Personal API
+            keys connect directly — no separate user registration.
           </div>
         )}
 
