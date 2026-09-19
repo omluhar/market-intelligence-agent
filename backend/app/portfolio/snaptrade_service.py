@@ -1,5 +1,6 @@
 import logging
 import re
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.app.config import settings
@@ -12,10 +13,31 @@ def snaptrade_configured() -> bool:
     return bool(settings.SNAPTRADE_CLIENT_ID and settings.SNAPTRADE_CONSUMER_KEY)
 
 
+def auth_mode() -> str:
+    return (settings.SNAPTRADE_AUTH_MODE or "commercial").strip().lower()
+
+
+def is_personal_auth() -> bool:
+    return auth_mode() == "personal"
+
+
 def _response_body(response: Any) -> Any:
     if hasattr(response, "body"):
         return response.body
     return response
+
+
+def _field(obj: Any, *names: str) -> Any:
+    if obj is None:
+        return None
+    for name in names:
+        if isinstance(obj, dict) and name in obj:
+            return obj[name]
+        if hasattr(obj, name):
+            value = getattr(obj, name)
+            if value is not None:
+                return value
+    return None
 
 
 def _client():
@@ -24,8 +46,7 @@ def _client():
     from snaptrade_client import SnapTrade
     from snaptrade_client.auth import SnapTradeAuth
 
-    mode = (settings.SNAPTRADE_AUTH_MODE or "commercial").strip().lower()
-    if mode == "personal":
+    if is_personal_auth():
         auth = SnapTradeAuth.personal_api_key(
             consumer_key=settings.SNAPTRADE_CONSUMER_KEY,
             client_id=settings.SNAPTRADE_CLIENT_ID,
@@ -36,6 +57,12 @@ def _client():
             client_id=settings.SNAPTRADE_CLIENT_ID,
         )
     return SnapTrade(auth=auth)
+
+
+def _user_credentials() -> Tuple[Optional[str], Optional[str]]:
+    if is_personal_auth():
+        return None, None
+    return ensure_snaptrade_user()
 
 
 def _infer_account_type(name: str) -> AccountType:
@@ -55,60 +82,79 @@ def ensure_snaptrade_user() -> Tuple[str, str]:
         return str(existing["id"]), str(existing["user_secret"])
 
     client = _client()
-    response = client.authentication.register_snap_trade_user(body={})
+    user_id = f"mic-{uuid.uuid4().hex[:20]}"
+    from snaptrade_client.model.snap_trade_register_user_request_body import SnapTradeRegisterUserRequestBody
+
+    response = client.authentication.register_snap_trade_user(
+        body=SnapTradeRegisterUserRequestBody(userId=user_id)
+    )
     body = _response_body(response)
-    user_id = str(body["userId"])
-    user_secret = str(body["userSecret"])
-    save_portfolio_user(user_id, user_secret)
-    return user_id, user_secret
+    user_secret = _field(body, "userSecret", "user_secret")
+    if not user_secret:
+        raise RuntimeError("SnapTrade registration did not return a user secret.")
+    save_portfolio_user(user_id, str(user_secret))
+    return user_id, str(user_secret)
 
 
 def create_connection_portal_url(*, redirect_url: Optional[str] = None) -> Dict[str, str]:
-    user_id, user_secret = ensure_snaptrade_user()
+    user_id, user_secret = _user_credentials()
     client = _client()
     kwargs: Dict[str, Any] = {
-        "user_id": user_id,
-        "user_secret": user_secret,
         "connection_type": "read",
         "connection_portal_version": "v4",
     }
+    if user_id and user_secret:
+        kwargs["user_id"] = user_id
+        kwargs["user_secret"] = user_secret
     if redirect_url:
         kwargs["custom_redirect"] = redirect_url
         kwargs["immediate_redirect"] = True
     response = client.authentication.login_snap_trade_user(**kwargs)
     body = _response_body(response)
-    redirect_uri = body.get("redirectURI") or body.get("redirectUri") or body.get("loginLink")
+    redirect_uri = _field(body, "redirectURI", "redirectUri", "loginLink")
     if not redirect_uri:
         raise RuntimeError("SnapTrade did not return a connection portal URL.")
-    return {"portal_url": str(redirect_uri), "user_id": user_id}
+    return {
+        "portal_url": str(redirect_uri),
+        "user_id": user_id or "personal",
+    }
 
 
 def _symbol_from_position(position: Dict[str, Any]) -> Optional[str]:
-    symbol_obj = position.get("symbol") or {}
+    symbol_obj = position.get("symbol") if isinstance(position, dict) else _field(position, "symbol")
     if isinstance(symbol_obj, dict):
         raw = symbol_obj.get("symbol") or symbol_obj.get("raw_symbol") or symbol_obj.get("ticker")
     else:
-        raw = symbol_obj
+        raw = _field(symbol_obj, "symbol", "raw_symbol", "ticker") or symbol_obj
     if not raw:
         return None
     cleaned = re.sub(r"[^A-Z0-9.^-]", "", str(raw).upper())
     return cleaned or None
 
 
+def _as_dict(row: Any) -> Dict[str, Any]:
+    if isinstance(row, dict):
+        return row
+    return {key: getattr(row, key) for key in dir(row) if not key.startswith("_")}
+
+
 def sync_robinhood_holdings() -> Dict[str, Any]:
-    user_id, user_secret = ensure_snaptrade_user()
+    user_id, user_secret = _user_credentials()
     client = _client()
-    accounts_response = client.account_information.list_user_accounts(
-        user_id=user_id,
-        user_secret=user_secret,
-    )
+    account_kwargs: Dict[str, Any] = {}
+    if user_id and user_secret:
+        account_kwargs["user_id"] = user_id
+        account_kwargs["user_secret"] = user_secret
+
+    accounts_response = client.account_information.list_user_accounts(**account_kwargs)
     accounts_body = _response_body(accounts_response)
     if not isinstance(accounts_body, list):
-        accounts_body = accounts_body.get("accounts") or []
+        accounts_body = _field(accounts_body, "accounts") or []
 
     synced_accounts = 0
     synced_positions = 0
-    for account in accounts_body:
+    for raw_account in accounts_body:
+        account = _as_dict(raw_account)
         account_id = str(account.get("id") or account.get("account_id") or "")
         if not account_id:
             continue
@@ -123,17 +169,15 @@ def sync_robinhood_holdings() -> Dict[str, Any]:
             brokerage=brokerage,
             source="snaptrade",
         )
-        positions_response = client.account_information.get_all_account_positions(
-            account_id=account_id,
-            user_id=user_id,
-            user_secret=user_secret,
-        )
+        position_kwargs = {"account_id": account_id, **account_kwargs}
+        positions_response = client.account_information.get_all_account_positions(**position_kwargs)
         positions_body = _response_body(positions_response)
         if not isinstance(positions_body, list):
-            positions_body = positions_body.get("positions") or []
+            positions_body = _field(positions_body, "positions") or []
 
         holdings: List[Dict[str, Any]] = []
-        for position in positions_body:
+        for raw_position in positions_body:
+            position = _as_dict(raw_position)
             symbol = _symbol_from_position(position)
             if not symbol:
                 continue

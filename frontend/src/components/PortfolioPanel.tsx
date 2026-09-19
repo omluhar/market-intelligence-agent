@@ -51,6 +51,7 @@ interface PortfolioInsight {
 interface PortfolioDashboard {
   connected: boolean;
   snaptrade_configured: boolean;
+  snaptrade_auth_mode?: string;
   accounts: PortfolioAccount[];
   holdings: PortfolioHolding[];
   insights: PortfolioInsight[];
@@ -226,6 +227,14 @@ export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (sy
             Add <code className="text-amber-100">SNAPTRADE_CLIENT_ID</code> and{" "}
             <code className="text-amber-100">SNAPTRADE_CONSUMER_KEY</code> in Render environment variables
             (free SnapTrade developer account). Connection is read-only — no trades are placed.
+          </div>
+        )}
+        {data?.snaptrade_configured && (
+          <div className="mt-4 text-xs text-neutral-500">
+            SnapTrade auth mode:{" "}
+            <span className="text-neutral-300">{data.snaptrade_auth_mode ?? "commercial"}</span>. If connect
+            fails, try setting <code className="text-neutral-300">SNAPTRADE_AUTH_MODE=personal</code> in Render
+            when using a Personal API key.
           </div>
         )}
 
