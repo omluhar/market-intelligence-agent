@@ -22,8 +22,9 @@ interface PortfolioAccount {
   name: string;
   account_type: AccountType;
   brokerage: string;
-  account_value?: number;
   cash_balance?: number;
+  buying_power?: number;
+  positions_value?: number;
   last_synced_at?: string | null;
 }
 
@@ -165,7 +166,9 @@ export default function PortfolioPanel({
       const positions = Number(payload.positions ?? 0);
       if (accounts > 0) {
         setSyncNotice(
-          `Synced ${accounts} account${accounts === 1 ? "" : "s"} and ${positions} holding${positions === 1 ? "" : "s"}.`
+          positions > 0
+            ? `Synced ${accounts} account${accounts === 1 ? "" : "s"} and ${positions} holding${positions === 1 ? "" : "s"}.`
+            : `Synced ${accounts} account${accounts === 1 ? "" : "s"}. Balances loaded — run Analyze portfolio for tailored insights.`
         );
       } else {
         setSyncNotice(
@@ -345,13 +348,18 @@ export default function PortfolioPanel({
                 >
                   <div className="flex justify-between gap-2">
                     <span className="font-semibold text-neutral-200">{account.name}</span>
-                    <span className="text-cyan-300 font-semibold">
-                      {formatUsd(account.account_value ?? 0)}
+                    <span className="text-emerald-300 font-semibold">
+                      {formatUsd(
+                        (account.cash_balance ?? 0) + (account.positions_value ?? 0)
+                      )}
                     </span>
                   </div>
-                  <div className="flex justify-between gap-2 text-[10px] text-neutral-500">
-                    <span className="uppercase">{account.brokerage}</span>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-neutral-500">
                     <span>Cash {formatUsd(account.cash_balance ?? 0)}</span>
+                    <span>Investments {formatUsd(account.positions_value ?? 0)}</span>
+                    {(account.buying_power ?? 0) > 0 && (
+                      <span>Buying power {formatUsd(account.buying_power ?? 0)}</span>
+                    )}
                   </div>
                   <select
                     value={account.account_type}
@@ -421,11 +429,7 @@ export default function PortfolioPanel({
       <div className="bg-neutral-900/60 border border-neutral-800 rounded-xl p-5">
         <h3 className="text-sm font-semibold uppercase tracking-wide mb-4">Holdings</h3>
         {!data?.holdings?.length ? (
-          <p className="text-xs text-neutral-500">
-            {data?.accounts?.some((account) => (account.account_value ?? 0) > 0)
-              ? "Account totals are synced above. Individual stock positions may take a few minutes after your first Robinhood link."
-              : "Synced positions will appear here after Robinhood finishes its first holdings sync."}
-          </p>
+          <p className="text-xs text-neutral-500">Synced positions will appear here.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">

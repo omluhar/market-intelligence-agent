@@ -39,10 +39,22 @@ def _rows_to_dicts(cursor) -> List[Dict[str, Any]]:
     return [{col: _jsonify(val) for col, val in zip(cols, row)} for row in cursor.fetchall()]
 
 
+def _migrate_schema(conn) -> None:
+    for column, typedef in (
+        ("cash_balance", "DOUBLE DEFAULT 0"),
+        ("buying_power", "DOUBLE DEFAULT 0"),
+        ("positions_value", "DOUBLE DEFAULT 0"),
+    ):
+        conn.execute(
+            f"ALTER TABLE portfolio_accounts ADD COLUMN IF NOT EXISTS {column} {typedef}"
+        )
+
+
 def _get_conn():
     global _SCHEMA_READY
     conn = duckdb.connect(str(_db_path()))
     if _SCHEMA_READY:
+        _migrate_schema(conn)
         return conn
     with _SCHEMA_LOCK:
         if not _SCHEMA_READY:
@@ -59,8 +71,6 @@ def _get_conn():
                     account_type VARCHAR DEFAULT 'other',
                     brokerage VARCHAR,
                     source VARCHAR DEFAULT 'snaptrade',
-                    account_value DOUBLE DEFAULT 0,
-                    cash_balance DOUBLE DEFAULT 0,
                     last_synced_at TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS portfolio_holdings (
@@ -90,9 +100,8 @@ def _get_conn():
                     value VARCHAR NOT NULL
                 );
             """)
-            conn.execute("ALTER TABLE portfolio_accounts ADD COLUMN IF NOT EXISTS account_value DOUBLE DEFAULT 0")
-            conn.execute("ALTER TABLE portfolio_accounts ADD COLUMN IF NOT EXISTS cash_balance DOUBLE DEFAULT 0")
             _SCHEMA_READY = True
+        _migrate_schema(conn)
     return conn
 
 
@@ -124,38 +133,40 @@ def upsert_account(
     account_type: AccountType,
     brokerage: str,
     source: str = "snaptrade",
-    account_value: Optional[float] = None,
-    cash_balance: Optional[float] = None,
 ) -> Dict[str, Any]:
     conn = _get_conn()
     conn.execute(
         """
-        INSERT INTO portfolio_accounts (
-            id, external_id, name, account_type, brokerage, source,
-            account_value, cash_balance, last_synced_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        INSERT INTO portfolio_accounts (id, external_id, name, account_type, brokerage, source, last_synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT (id) DO UPDATE SET
             external_id = excluded.external_id,
             name = excluded.name,
             brokerage = excluded.brokerage,
-            source = excluded.source,
-            account_value = excluded.account_value,
-            cash_balance = excluded.cash_balance
+            source = excluded.source
         """,
-        (
-            account_id,
-            external_id,
-            name,
-            account_type,
-            brokerage,
-            source,
-            float(account_value or 0),
-            float(cash_balance or 0),
-        ),
+        (account_id, external_id, name, account_type, brokerage, source),
     )
     rows = _rows_to_dicts(conn.execute("SELECT * FROM portfolio_accounts WHERE id = ?", (account_id,)))
     return rows[0]
+
+
+def update_account_snaptrade_balances(
+    account_id: str,
+    *,
+    cash_balance: float,
+    buying_power: float,
+    positions_value: float,
+) -> None:
+    conn = _get_conn()
+    conn.execute(
+        """
+        UPDATE portfolio_accounts
+        SET cash_balance = ?, buying_power = ?, positions_value = ?, last_synced_at = ?
+        WHERE id = ?
+        """,
+        (cash_balance, buying_power, positions_value, _utcnow(), account_id),
+    )
 
 
 def set_account_type(account_id: str, account_type: AccountType) -> Optional[Dict[str, Any]]:
@@ -352,15 +363,17 @@ def get_portfolio_dashboard() -> Dict[str, Any]:
     insights = _rows_to_dicts(
         conn.execute("SELECT * FROM portfolio_insights ORDER BY generated_at DESC")
     )
-    account_values = round(sum(float(a.get("account_value") or 0) for a in accounts), 2)
     holdings_value = round(sum(float(h.get("market_value") or 0) for h in holdings), 2)
-    total_value = account_values if account_values > 0 else holdings_value
+    account_totals = [
+        float(a.get("cash_balance") or 0) + float(a.get("positions_value") or 0) for a in accounts
+    ]
+    total_value = round(sum(account_totals), 2) if account_totals else holdings_value
     by_type: Dict[str, float] = {}
-    if account_values > 0:
-        for account in accounts:
-            acct_type = str(account.get("account_type") or "other")
-            by_type[acct_type] = by_type.get(acct_type, 0.0) + float(account.get("account_value") or 0)
-    else:
+    for account in accounts:
+        acct_type = str(account.get("account_type") or "other")
+        account_total = float(account.get("cash_balance") or 0) + float(account.get("positions_value") or 0)
+        by_type[acct_type] = by_type.get(acct_type, 0.0) + account_total
+    if not by_type and holdings:
         for holding in holdings:
             acct_type = str(holding.get("account_type") or "other")
             by_type[acct_type] = by_type.get(acct_type, 0.0) + float(holding.get("market_value") or 0)
