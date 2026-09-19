@@ -6,12 +6,12 @@ import { MessageCircle, Send, X } from "lucide-react";
 export interface DeskChatContext {
   ticker: string | null;
   chart_interval: string;
-  snapshot?: Record<string, unknown> | null;
-  technical?: Record<string, unknown> | null;
-  proposal?: Record<string, unknown> | null;
-  tactical?: Record<string, unknown> | null;
-  risk?: Record<string, unknown> | null;
-  tactical_risk?: Record<string, unknown> | null;
+  snapshot?: unknown;
+  technical?: unknown;
+  proposal?: unknown;
+  tactical?: unknown;
+  risk?: unknown;
+  tactical_risk?: unknown;
   view_only?: boolean;
 }
 
