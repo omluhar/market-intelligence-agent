@@ -163,7 +163,80 @@ def create_connection_portal_url(*, redirect_url: Optional[str] = None) -> Dict[
         return _portal_login(redirect_url=redirect_url, force_personal=True)
 
 
+def _float_val(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_api_list(body: Any, *keys: str) -> List[Any]:
+    if body is None:
+        return []
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        for key in keys:
+            value = body.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _account_total_value(account: Dict[str, Any]) -> float:
+    balance = account.get("balance")
+    if isinstance(balance, dict):
+        total = balance.get("total")
+        if isinstance(total, dict):
+            amount = _float_val(total.get("amount"))
+            if amount > 0:
+                return amount
+        amount = _float_val(balance.get("amount"))
+        if amount > 0:
+            return amount
+    return _float_val(account.get("total_value") or account.get("totalValue"))
+
+
+def _account_cash_balance(client: Any, account_id: str, account_kwargs: Dict[str, Any]) -> float:
+    try:
+        response = client.account_information.get_user_account_balance(
+            account_id=account_id,
+            **account_kwargs,
+        )
+    except Exception as exc:
+        logger.warning("Could not fetch cash balance for account %s: %s", account_id, exc)
+        return 0.0
+
+    balances = _normalize_api_list(_response_body(response))
+    cash_total = 0.0
+    for raw_balance in balances:
+        balance = _as_dict(raw_balance)
+        currency = balance.get("currency")
+        code = ""
+        if isinstance(currency, dict):
+            code = str(currency.get("code") or "").upper()
+        cash = _float_val(balance.get("cash"))
+        if cash > 0 and (not code or code == "USD"):
+            cash_total += cash
+    return round(cash_total, 2)
+
+
 def _symbol_from_position(position: Dict[str, Any]) -> Optional[str]:
+    instrument = position.get("instrument")
+    if isinstance(instrument, dict):
+        raw = (
+            instrument.get("symbol")
+            or instrument.get("raw_symbol")
+            or instrument.get("ticker")
+            or instrument.get("underlying_symbol")
+        )
+        if raw:
+            cleaned = re.sub(r"[^A-Z0-9.^-]", "", str(raw).upper())
+            if cleaned:
+                return cleaned
+
     symbol_obj = position.get("symbol") if isinstance(position, dict) else _field(position, "symbol")
     if isinstance(symbol_obj, dict):
         raw = symbol_obj.get("symbol") or symbol_obj.get("raw_symbol") or symbol_obj.get("ticker")
@@ -173,6 +246,43 @@ def _symbol_from_position(position: Dict[str, Any]) -> Optional[str]:
         return None
     cleaned = re.sub(r"[^A-Z0-9.^-]", "", str(raw).upper())
     return cleaned or None
+
+
+def _position_to_holding(position: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    symbol = _symbol_from_position(position)
+    if not symbol:
+        return None
+
+    units = _float_val(
+        position.get("units")
+        or position.get("fractional_units")
+        or position.get("quantity")
+    )
+    if units == 0:
+        return None
+
+    price = _float_val(position.get("price") or position.get("current_price"))
+    cost_basis_total = _float_val(position.get("cost_basis"))
+    avg_cost = _float_val(position.get("average_purchase_price") or position.get("average_cost"))
+    if avg_cost <= 0 and units != 0 and cost_basis_total != 0:
+        avg_cost = abs(cost_basis_total / units)
+
+    market_value = _float_val(position.get("market_value"))
+    if market_value <= 0 and units != 0 and price != 0:
+        market_value = abs(units * price)
+
+    open_pnl = _float_val(position.get("open_pnl"))
+    if open_pnl == 0 and cost_basis_total != 0:
+        open_pnl = market_value - abs(cost_basis_total)
+
+    return {
+        "symbol": symbol,
+        "quantity": abs(units),
+        "average_cost": round(abs(avg_cost), 4),
+        "current_price": round(abs(price), 4),
+        "market_value": round(abs(market_value), 2),
+        "unrealized_pnl": round(open_pnl, 2),
+    }
 
 
 def _as_dict(row: Any) -> Dict[str, Any]:
@@ -193,9 +303,7 @@ def sync_robinhood_holdings() -> Dict[str, Any]:
         account_kwargs["user_secret"] = user_secret
 
     accounts_response = client.account_information.list_user_accounts(**account_kwargs)
-    accounts_body = _response_body(accounts_response)
-    if not isinstance(accounts_body, list):
-        accounts_body = _field(accounts_body, "accounts") or []
+    accounts_body = _normalize_api_list(_response_body(accounts_response), "accounts")
 
     synced_accounts = 0
     synced_positions = 0
@@ -207,6 +315,8 @@ def sync_robinhood_holdings() -> Dict[str, Any]:
         name = str(account.get("name") or account.get("number") or "Brokerage account")
         brokerage = str((account.get("institution_name") or account.get("brokerage") or "robinhood")).lower()
         acct_type = _infer_account_type(name)
+        account_value = round(_account_total_value(account), 2)
+        cash_balance = round(_account_cash_balance(client, account_id, account_kwargs), 2)
         upsert_account(
             account_id=account_id,
             external_id=account_id,
@@ -214,36 +324,31 @@ def sync_robinhood_holdings() -> Dict[str, Any]:
             account_type=acct_type,
             brokerage=brokerage,
             source="snaptrade",
+            account_value=account_value,
+            cash_balance=cash_balance,
         )
         position_kwargs = {"account_id": account_id, **account_kwargs}
-        positions_response = client.account_information.get_all_account_positions(**position_kwargs)
-        positions_body = _response_body(positions_response)
-        if not isinstance(positions_body, list):
-            positions_body = _field(positions_body, "positions") or []
+        try:
+            positions_response = client.account_information.get_all_account_positions(**position_kwargs)
+            positions_body = _normalize_api_list(_response_body(positions_response), "positions", "results")
+        except Exception as exc:
+            logger.warning("Could not fetch positions for account %s (%s): %s", account_id, name, exc)
+            positions_body = []
 
         holdings: List[Dict[str, Any]] = []
         for raw_position in positions_body:
-            position = _as_dict(raw_position)
-            symbol = _symbol_from_position(position)
-            if not symbol:
-                continue
-            units = float(position.get("units") or position.get("quantity") or 0)
-            if units <= 0:
-                continue
-            price = float(position.get("price") or position.get("current_price") or 0)
-            avg_cost = float(position.get("average_purchase_price") or position.get("average_cost") or price)
-            market_value = float(position.get("market_value") or (units * price))
-            open_pnl = float(position.get("open_pnl") or ((price - avg_cost) * units))
-            holdings.append(
-                {
-                    "symbol": symbol,
-                    "quantity": units,
-                    "average_cost": avg_cost,
-                    "current_price": price,
-                    "market_value": market_value,
-                    "unrealized_pnl": open_pnl,
-                }
-            )
+            holding = _position_to_holding(_as_dict(raw_position))
+            if holding:
+                holdings.append(holding)
+
+        logger.info(
+            "SnapTrade account %s (%s): %d positions parsed, account_value=%.2f cash=%.2f",
+            name,
+            account_id,
+            len(holdings),
+            account_value,
+            cash_balance,
+        )
         replace_holdings(account_id, holdings)
         synced_accounts += 1
         synced_positions += len(holdings)

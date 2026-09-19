@@ -22,6 +22,8 @@ interface PortfolioAccount {
   name: string;
   account_type: AccountType;
   brokerage: string;
+  account_value?: number;
+  cash_balance?: number;
   last_synced_at?: string | null;
 }
 
@@ -343,7 +345,13 @@ export default function PortfolioPanel({
                 >
                   <div className="flex justify-between gap-2">
                     <span className="font-semibold text-neutral-200">{account.name}</span>
-                    <span className="text-neutral-500 uppercase">{account.brokerage}</span>
+                    <span className="text-cyan-300 font-semibold">
+                      {formatUsd(account.account_value ?? 0)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-[10px] text-neutral-500">
+                    <span className="uppercase">{account.brokerage}</span>
+                    <span>Cash {formatUsd(account.cash_balance ?? 0)}</span>
                   </div>
                   <select
                     value={account.account_type}
@@ -413,7 +421,11 @@ export default function PortfolioPanel({
       <div className="bg-neutral-900/60 border border-neutral-800 rounded-xl p-5">
         <h3 className="text-sm font-semibold uppercase tracking-wide mb-4">Holdings</h3>
         {!data?.holdings?.length ? (
-          <p className="text-xs text-neutral-500">Synced positions will appear here.</p>
+          <p className="text-xs text-neutral-500">
+            {data?.accounts?.some((account) => (account.account_value ?? 0) > 0)
+              ? "Account totals are synced above. Individual stock positions may take a few minutes after your first Robinhood link."
+              : "Synced positions will appear here after Robinhood finishes its first holdings sync."}
+          </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
