@@ -6,6 +6,7 @@ from backend.app.agents.scout_agent import run_scout
 from backend.app.agents.tactical_agent import run_tactical, tactical_to_trade_proposal
 from backend.app.config import settings
 from backend.app.execution.sandbox_router import execute_order, save_recommendation
+from backend.app.portfolio.portfolio_store import holding_context_for_symbol
 from backend.app.services.market_cache import EMPTY_TECHNICAL, load_market_bundle
 
 logger = logging.getLogger(__name__)
@@ -36,9 +37,10 @@ def evaluate_symbol(
     history = bundle.get("history") or []
 
     last_price = float(snapshot.get("last_price") or technical.get("last_price") or 0.0)
+    portfolio_context = holding_context_for_symbol(symbol)
 
-    proposal = run_scout(snapshot)
-    tactical = run_tactical(symbol, last_price, technical)
+    proposal = run_scout(snapshot, portfolio_context=portfolio_context)
+    tactical = run_tactical(symbol, last_price, technical, portfolio_context=portfolio_context)
 
     scout_risk = None
     tactical_risk = None

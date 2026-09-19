@@ -17,8 +17,15 @@ from backend.app.execution.sandbox_router import (
     get_watchlist,
     remove_from_watchlist,
 )
+from backend.app.portfolio import portfolio_store
 from backend.app.services.council_service import evaluate_symbol
 from backend.app.services.market_cache import cached_history_bundle, load_overview
+from backend.app.services.portfolio_service import (
+    portfolio_status,
+    run_portfolio_analysis,
+    start_broker_connection,
+    sync_broker_holdings,
+)
 from backend.app.services.scheduler_service import run_market_sweep, shutdown_scheduler, start_scheduler
 from backend.app.config import settings
 
@@ -76,6 +83,24 @@ class WatchlistRequest(BaseModel):
 
 class SweepResponse(BaseModel):
     status: Literal["sweep triggered", "sweep already running"]
+
+
+class PortfolioConnectResponse(BaseModel):
+    portal_url: str
+    user_id: str
+
+
+class AccountTypeUpdate(BaseModel):
+    account_type: Literal["roth_ira", "taxable", "traditional_ira", "other"]
+
+
+class ManualHoldingRequest(BaseModel):
+    account_name: str
+    account_type: Literal["roth_ira", "taxable", "traditional_ira", "other"]
+    symbol: str
+    quantity: float
+    average_cost: float
+    current_price: float
 
 
 INTERVAL_PERIODS = {
@@ -186,6 +211,65 @@ def desk_chat(req: DeskChatRequest):
 @app.get("/api/v1/orders")
 def fetch_orders() -> List[Dict[str, Any]]:
     return get_order_history()
+
+
+@app.get("/api/v1/portfolio")
+def fetch_portfolio():
+    try:
+        return portfolio_status()
+    except Exception as exc:
+        logger.exception("Portfolio fetch failed")
+        raise HTTPException(status_code=502, detail=f"Portfolio fetch failed: {exc}")
+
+
+@app.post("/api/v1/portfolio/connect", response_model=PortfolioConnectResponse)
+def connect_broker():
+    try:
+        redirect = settings.PORTFOLIO_REDIRECT_URL.strip() or None
+        payload = start_broker_connection(redirect_url=redirect)
+        return PortfolioConnectResponse(**payload)
+    except Exception as exc:
+        logger.exception("Broker connect failed")
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/api/v1/portfolio/sync")
+def sync_portfolio():
+    try:
+        return sync_broker_holdings()
+    except Exception as exc:
+        logger.exception("Portfolio sync failed")
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/api/v1/portfolio/analyze")
+def analyze_portfolio():
+    try:
+        return run_portfolio_analysis()
+    except Exception as exc:
+        logger.exception("Portfolio analysis failed")
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.patch("/api/v1/portfolio/accounts/{account_id}")
+def update_account_type(account_id: str, req: AccountTypeUpdate):
+    updated = portfolio_store.set_account_type(account_id, req.account_type)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return updated
+
+
+@app.post("/api/v1/portfolio/manual-holding")
+def add_manual_holding(req: ManualHoldingRequest):
+    account = portfolio_store.ensure_manual_account(req.account_name, req.account_type)
+    holding = portfolio_store.add_manual_holding(
+        account_id=str(account["id"]),
+        symbol=req.symbol,
+        quantity=req.quantity,
+        average_cost=req.average_cost,
+        current_price=req.current_price,
+    )
+    return {"account": account, "holding": holding}
 
 
 def _frontend_dir() -> Path:

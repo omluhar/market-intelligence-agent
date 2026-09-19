@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     CORS_ORIGIN_REGEX: str = r"https://.*\.(vercel\.app|onrender\.com|railway\.app)"
     DUCKDB_PATH: str = ""
     FRONTEND_DIST: str = ""
+    SNAPTRADE_CLIENT_ID: str = ""
+    SNAPTRADE_CONSUMER_KEY: str = ""
+    PORTFOLIO_REDIRECT_URL: str = ""
 
     class Config:
         env_file = str(_ENV_FILE)

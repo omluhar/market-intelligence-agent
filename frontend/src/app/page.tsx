@@ -14,10 +14,12 @@ import {
   ShieldCheck,
   Sparkles,
   TrendingUp,
+  Wallet,
   X,
   Zap,
 } from "lucide-react";
 import DeskChat from "@/components/DeskChat";
+import PortfolioPanel from "@/components/PortfolioPanel";
 import StockChart, { type OhlcvBar } from "@/components/StockChart";
 
 const API_BASE =
@@ -167,6 +169,7 @@ export default function Dashboard() {
   const [chartInterval, setChartInterval] = useState<(typeof CHART_INTERVALS)[number]["interval"]>("1d");
   const [error, setError] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(false);
+  const [activeTab, setActiveTab] = useState<"market" | "portfolio">("market");
   const requestIdRef = useRef(0);
   const historyRequestRef = useRef(0);
   const chartIntervalRef = useRef(chartInterval);
@@ -420,6 +423,14 @@ export default function Dashboard() {
 
   const technical = scanData?.technical;
 
+  const openTickerFromPortfolio = useCallback(
+    (symbol: string) => {
+      setActiveTab("market");
+      void selectTicker(symbol);
+    },
+    [selectTicker]
+  );
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans p-6">
       <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center pb-6 border-b border-neutral-800 gap-4">
@@ -458,6 +469,37 @@ export default function Dashboard() {
         </div>
       </header>
 
+      <div className="max-w-7xl mx-auto mt-4 flex gap-2">
+        <button
+          onClick={() => setActiveTab("market")}
+          className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border ${
+            activeTab === "market"
+              ? "bg-orange-950 border-orange-700 text-orange-200"
+              : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-neutral-200"
+          }`}
+        >
+          <Activity className="h-3.5 w-3.5" />
+          Market desk
+        </button>
+        <button
+          onClick={() => setActiveTab("portfolio")}
+          className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border ${
+            activeTab === "portfolio"
+              ? "bg-cyan-950 border-cyan-700 text-cyan-200"
+              : "bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-neutral-200"
+          }`}
+        >
+          <Wallet className="h-3.5 w-3.5" />
+          My portfolio
+        </button>
+      </div>
+
+      {activeTab === "portfolio" ? (
+        <div className="max-w-7xl mx-auto mt-6">
+          <PortfolioPanel onSelectTicker={openTickerFromPortfolio} />
+        </div>
+      ) : (
+        <>
       <div className="max-w-7xl mx-auto mt-4 flex flex-wrap items-center gap-2">
         <span className="text-[10px] uppercase tracking-wide text-neutral-500 font-semibold">Watchlist</span>
         <span className="text-[10px] text-neutral-600">Click to load quotes. Scan is separate.</span>
@@ -841,6 +883,8 @@ export default function Dashboard() {
           </div>
         </div>
       </main>
+        </>
+      )}
       <DeskChat
         apiBase={API_BASE}
         context={{

@@ -24,6 +24,8 @@ Valuation rules:
 - Prefer names with trailing PE below 25, or forward PE below 20.
 - Treat debt-to-equity above 10 as a yfinance percentage (150 means 1.50).
   Acceptable leverage is generally at or below 2.0 on a ratio basis.
+- Positive free cash flow is a quality signal; negative FCF needs a stronger discount.
+- drawdown_from_52w_high_pct near 0% means extended; below -15% can mean value if fundamentals hold.
 - A setup passes only when BOTH valuation (PE) and leverage (debt-to-equity)
   are acceptable, or when missing one metric is clearly offset by the other
   plus a discounted 52-week price. If the picture is mixed or expensive,
@@ -31,6 +33,8 @@ Valuation rules:
 - If valuation_pass is false, leave action/shares/target_price/thesis empty.
 - If valuation_pass is true, propose BUY for undervalued names or SELL for
   rich/over-levered names. action must be exactly BUY or SELL.
+- If portfolio_context shows the user already holds the name with high weight_pct,
+  prefer HOLD-style thesis or SELL trim language instead of adding more.
 - Size the order so shares * target_price does not exceed
   MAX_POSITION_SIZE_USD. Use last_price as target_price unless you have a
   specific limit. shares must be an integer >= 1.
@@ -63,6 +67,7 @@ class ScoutDecision(BaseModel):
 
 class ScoutState(TypedDict):
     snapshot: MarketSnapshot
+    portfolio_context: Optional[Dict[str, Any]]
     decision: Optional[ScoutDecision]
     proposal: Optional[TradeProposal]
 
@@ -80,20 +85,44 @@ def _normalize_debt_to_equity(raw: Any) -> Optional[float]:
     return value
 
 
-def _llm_payload(snapshot: MarketSnapshot) -> Dict[str, Any]:
+def _drawdown_from_high(last_price: float, high: Any) -> Optional[float]:
+    try:
+        peak = float(high)
+    except (TypeError, ValueError):
+        return None
+    if peak <= 0 or last_price <= 0:
+        return None
+    return round(((last_price - peak) / peak) * 100.0, 2)
+
+
+def _llm_payload(snapshot: MarketSnapshot, portfolio_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    last_price = float(snapshot.get("last_price") or 0.0)
+    market_cap = float(snapshot.get("market_cap") or 0.0)
+    fcf = snapshot.get("free_cashflow")
+    fcf_yield = None
+    if fcf is not None and market_cap > 0:
+        try:
+            fcf_yield = round((float(fcf) / market_cap) * 100.0, 3)
+        except (TypeError, ValueError):
+            fcf_yield = None
     return {
         "symbol": snapshot.get("symbol"),
-        "last_price": snapshot.get("last_price"),
-        "market_cap": snapshot.get("market_cap"),
+        "last_price": last_price,
+        "market_cap": market_cap,
         "fifty_two_week_high": snapshot.get("fifty_two_week_high"),
         "fifty_two_week_low": snapshot.get("fifty_two_week_low"),
+        "drawdown_from_52w_high_pct": _drawdown_from_high(
+            last_price, snapshot.get("fifty_two_week_high")
+        ),
         "trailing_pe": snapshot.get("trailing_pe"),
         "forward_pe": snapshot.get("forward_pe"),
         "debt_to_equity_raw": snapshot.get("debt_to_equity"),
         "normalized_debt_to_equity": _normalize_debt_to_equity(
             snapshot.get("debt_to_equity")
         ),
-        "free_cashflow": snapshot.get("free_cashflow"),
+        "free_cashflow": fcf,
+        "fcf_yield_pct": fcf_yield,
+        "portfolio_context": portfolio_context or {},
         "MAX_POSITION_SIZE_USD": settings.MAX_POSITION_SIZE_USD,
     }
 
@@ -124,7 +153,12 @@ def analyze_valuation(state: ScoutState) -> Dict[str, Any]:
     decision = structured_llm.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=json.dumps(_llm_payload(snapshot), default=str)),
+            HumanMessage(
+                content=json.dumps(
+                    _llm_payload(snapshot, state.get("portfolio_context")),
+                    default=str,
+                )
+            ),
         ]
     )
     if isinstance(decision, dict):
@@ -178,10 +212,18 @@ def get_scout_graph():
     return _SCOUT_GRAPH
 
 
-def run_scout(snapshot: MarketSnapshot) -> Optional[TradeProposal]:
+def run_scout(
+    snapshot: MarketSnapshot,
+    portfolio_context: Optional[Dict[str, Any]] = None,
+) -> Optional[TradeProposal]:
     """Evaluate a market snapshot and return a TradeProposal, or None."""
     result = get_scout_graph().invoke(
-        {"snapshot": snapshot, "decision": None, "proposal": None}
+        {
+            "snapshot": snapshot,
+            "portfolio_context": portfolio_context,
+            "decision": None,
+            "proposal": None,
+        }
     )
     proposal = result.get("proposal")
     if proposal is None:

@@ -12,7 +12,7 @@ class TacticalProposal(BaseModel):
     target_price: float
     stop_loss: float
     time_horizon: Literal["SHORT_TERM"] = "SHORT_TERM"
-    setup_type: Literal["MOMENTUM_BREAKOUT"] = "MOMENTUM_BREAKOUT"
+    setup_type: Literal["MOMENTUM_BREAKOUT", "PULLBACK_BUY", "PROFIT_TAKE"] = "MOMENTUM_BREAKOUT"
     confidence: float = Field(ge=0.0, le=1.0)
     rationale: str = ""
 
@@ -25,6 +25,7 @@ def run_tactical(
     symbol: str,
     last_price: float,
     technical: Dict[str, Any],
+    portfolio_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[TacticalProposal]:
     """Deterministic short-horizon momentum node. LLM is not required for triggers."""
     ticker = symbol.upper().strip()
@@ -34,6 +35,14 @@ def run_tactical(
     sma_200 = technical.get("sma_200")
     volume_surge = technical.get("volume_surge_ratio")
     trend = technical.get("trend") or "NEUTRAL"
+    golden_cross = bool(technical.get("golden_cross"))
+    drawdown = technical.get("drawdown_from_high_pct")
+    weight_pct = None
+    if portfolio_context:
+        try:
+            weight_pct = float(portfolio_context.get("weight_pct"))
+        except (TypeError, ValueError):
+            weight_pct = None
 
     if price <= 0 or rsi is None or sma_50 is None:
         return None
@@ -43,17 +52,24 @@ def run_tactical(
     sma_200_v = float(sma_200) if sma_200 is not None else None
     surge_v = float(volume_surge) if volume_surge is not None else None
 
-    if rsi_v > 75:
+    if rsi_v > 75 or (weight_pct is not None and weight_pct > 22 and rsi_v > 68):
         stretch = min(0.35, max(0.0, (rsi_v - 75.0) / 50.0))
+        setup = "PROFIT_TAKE" if weight_pct and weight_pct > 22 else "MOMENTUM_BREAKOUT"
+        trim_note = (
+            f" Position is {weight_pct:.1f}% of portfolio; consider trimming concentration."
+            if weight_pct and weight_pct > 22
+            else ""
+        )
         return TacticalProposal(
             symbol=ticker,
             action="SELL",
+            setup_type=setup,
             target_price=_round_px(price * 0.94),
             stop_loss=_round_px(price * 1.03),
             confidence=round(min(0.95, 0.62 + stretch), 4),
             rationale=(
                 f"RSI-14 at {rsi_v:.1f} is overbought (>75). "
-                f"Fade the extension with a 6% downside target and a 3% stop above entry."
+                f"Fade the extension with a 6% downside target and a 3% stop above entry.{trim_note}"
             ),
         )
 
@@ -70,6 +86,31 @@ def run_tactical(
             ),
         )
 
+    pullback_ready = (
+        sma_200_v is not None
+        and price > sma_200_v
+        and 30.0 <= rsi_v <= 45.0
+        and trend in ("BULLISH", "NEUTRAL")
+    )
+    if pullback_ready:
+        confidence = 0.58
+        if golden_cross:
+            confidence += 0.10
+        if drawdown is not None and float(drawdown) < -8:
+            confidence += 0.08
+        return TacticalProposal(
+            symbol=ticker,
+            action="BUY",
+            setup_type="PULLBACK_BUY",
+            target_price=_round_px(price * 1.05),
+            stop_loss=_round_px(price * 0.96),
+            confidence=round(min(0.9, confidence), 4),
+            rationale=(
+                f"Pullback setup: RSI-14 {rsi_v:.1f} cooled off while price remains above the 200-day SMA "
+                f"(${sma_200_v:.2f}). Look for a controlled bounce with a 5% target and 4% stop."
+            ),
+        )
+
     buy_ready = (
         35.0 <= rsi_v <= 65.0
         and price > sma_50_v
@@ -79,6 +120,9 @@ def run_tactical(
     if not buy_ready:
         return None
 
+    if weight_pct is not None and weight_pct > 18:
+        return None
+
     confidence = 0.62
     if trend == "BULLISH":
         confidence += 0.12
@@ -86,10 +130,13 @@ def run_tactical(
         confidence += 0.10
     if 45.0 <= rsi_v <= 55.0:
         confidence += 0.08
+    if golden_cross:
+        confidence += 0.06
 
     return TacticalProposal(
         symbol=ticker,
         action="BUY",
+        setup_type="MOMENTUM_BREAKOUT",
         target_price=_round_px(price * 1.06),
         stop_loss=_round_px(price * 0.97),
         confidence=round(min(0.95, confidence), 4),

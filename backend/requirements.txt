@@ -10,3 +10,4 @@ duckdb>=0.10.0
 python-dotenv>=1.0.1
 apscheduler>=3.10.0
 feedparser>=6.0.0
+snaptrade-python-sdk>=13.0.0

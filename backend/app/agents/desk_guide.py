@@ -33,6 +33,8 @@ What the screen shows:
 - Risk Guardian: hard caps on position size. APPROVED/VETOED is the sandbox risk check.
 - AI Opportunity Screener: saved ideas from scans/sweeps (long-term vs short-term).
 - Execution Ledger: simulated fills in local DuckDB. Not a real broker.
+- My Portfolio tab: read-only Robinhood sync (via SnapTrade), account tagging (Roth IRA vs taxable),
+  holdings table, and tailored insights for long-term vs moderate-growth goals.
 
 If asked to change the product, suggest the user describe the change; you only explain.
 """
