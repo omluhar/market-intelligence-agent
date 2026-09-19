@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     FRONTEND_DIST: str = ""
     SNAPTRADE_CLIENT_ID: str = ""
     SNAPTRADE_CONSUMER_KEY: str = ""
+    SNAPTRADE_AUTH_MODE: str = "commercial"
     PORTFOLIO_REDIRECT_URL: str = ""
 
     class Config:

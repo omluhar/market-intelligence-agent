@@ -12,15 +12,30 @@ def snaptrade_configured() -> bool:
     return bool(settings.SNAPTRADE_CLIENT_ID and settings.SNAPTRADE_CONSUMER_KEY)
 
 
+def _response_body(response: Any) -> Any:
+    if hasattr(response, "body"):
+        return response.body
+    return response
+
+
 def _client():
     if not snaptrade_configured():
         raise RuntimeError("SnapTrade is not configured. Set SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY.")
     from snaptrade_client import SnapTrade
+    from snaptrade_client.auth import SnapTradeAuth
 
-    return SnapTrade(
-        client_id=settings.SNAPTRADE_CLIENT_ID,
-        consumer_key=settings.SNAPTRADE_CONSUMER_KEY,
-    )
+    mode = (settings.SNAPTRADE_AUTH_MODE or "commercial").strip().lower()
+    if mode == "personal":
+        auth = SnapTradeAuth.personal_api_key(
+            consumer_key=settings.SNAPTRADE_CONSUMER_KEY,
+            client_id=settings.SNAPTRADE_CLIENT_ID,
+        )
+    else:
+        auth = SnapTradeAuth.commercial_api_key(
+            consumer_key=settings.SNAPTRADE_CONSUMER_KEY,
+            client_id=settings.SNAPTRADE_CLIENT_ID,
+        )
+    return SnapTrade(auth=auth)
 
 
 def _infer_account_type(name: str) -> AccountType:
@@ -41,7 +56,7 @@ def ensure_snaptrade_user() -> Tuple[str, str]:
 
     client = _client()
     response = client.authentication.register_snap_trade_user(body={})
-    body = response.body if hasattr(response, "body") else response
+    body = _response_body(response)
     user_id = str(body["userId"])
     user_secret = str(body["userSecret"])
     save_portfolio_user(user_id, user_secret)
@@ -61,7 +76,7 @@ def create_connection_portal_url(*, redirect_url: Optional[str] = None) -> Dict[
         kwargs["custom_redirect"] = redirect_url
         kwargs["immediate_redirect"] = True
     response = client.authentication.login_snap_trade_user(**kwargs)
-    body = response.body if hasattr(response, "body") else response
+    body = _response_body(response)
     redirect_uri = body.get("redirectURI") or body.get("redirectUri") or body.get("loginLink")
     if not redirect_uri:
         raise RuntimeError("SnapTrade did not return a connection portal URL.")
@@ -87,7 +102,7 @@ def sync_robinhood_holdings() -> Dict[str, Any]:
         user_id=user_id,
         user_secret=user_secret,
     )
-    accounts_body = accounts_response.body if hasattr(accounts_response, "body") else accounts_response
+    accounts_body = _response_body(accounts_response)
     if not isinstance(accounts_body, list):
         accounts_body = accounts_body.get("accounts") or []
 
@@ -108,12 +123,12 @@ def sync_robinhood_holdings() -> Dict[str, Any]:
             brokerage=brokerage,
             source="snaptrade",
         )
-        positions_response = client.account_information.get_user_account_positions(
+        positions_response = client.account_information.get_all_account_positions(
             account_id=account_id,
             user_id=user_id,
             user_secret=user_secret,
         )
-        positions_body = positions_response.body if hasattr(positions_response, "body") else positions_response
+        positions_body = _response_body(positions_response)
         if not isinstance(positions_body, list):
             positions_body = positions_body.get("positions") or []
 
