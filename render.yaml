@@ -5,6 +5,10 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
+    disk:
+      name: mic-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: OPENAI_API_KEY
         sync: false
@@ -12,3 +16,5 @@ services:
         value: "true"
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: DUCKDB_PATH
+        value: /var/data/orders.db

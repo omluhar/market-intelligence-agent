@@ -4,7 +4,7 @@ import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from backend.app.execution.sandbox_router import get_watchlist
-from backend.app.services.agent_control import agents_paused
+from backend.app.services.agent_control import agents_paused, touch_last_sweep_at
 from backend.app.services.council_service import evaluate_symbol
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ def _run_market_sweep() -> None:
             )
         except Exception as exc:
             logger.warning("Background scan failed for %s: %s", symbol, exc)
+    touch_last_sweep_at()
     logger.info("Market sweep complete.")
 
 

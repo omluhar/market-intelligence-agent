@@ -29,6 +29,7 @@ from backend.app.services.portfolio_service import (
     sync_broker_holdings,
 )
 from backend.app.storage.agent_memory import agent_memory_stats
+from backend.app.portfolio.portfolio_store import ensure_agent_settings_initialized
 from backend.app.services.agent_control import AgentsPausedError, agents_status, assert_agents_active, set_agents_paused
 from backend.app.services.scheduler_service import run_market_sweep, scheduler_running, shutdown_scheduler, start_scheduler
 from backend.app.config import settings
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ensure_agent_settings_initialized()
     start_scheduler()
     yield
     shutdown_scheduler()
@@ -92,6 +94,10 @@ class SweepResponse(BaseModel):
 class AgentsStatusResponse(BaseModel):
     paused: bool
     scheduler_running: bool
+    last_sweep_at: Optional[str] = None
+    last_paused_at: Optional[str] = None
+    days_since_sweep: Optional[float] = None
+    catch_up_started: Optional[bool] = None
 
 
 class AgentsPauseRequest(BaseModel):
@@ -194,8 +200,9 @@ def fetch_agents_status():
 
 @app.post("/api/v1/agents/pause", response_model=AgentsStatusResponse)
 def pause_agents(req: AgentsPauseRequest):
-    set_agents_paused(req.paused)
-    return AgentsStatusResponse(**agents_status(scheduler_running=scheduler_running()))
+    payload = set_agents_paused(req.paused)
+    payload["scheduler_running"] = scheduler_running()
+    return AgentsStatusResponse(**payload)
 
 
 @app.post("/api/v1/scan/{ticker}", response_model=ScanResponse)

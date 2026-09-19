@@ -26,6 +26,36 @@ Then open `http://localhost:8000`.
 
 The included `render.yaml` deploys that same image to [Render](https://render.com). Set `OPENAI_API_KEY` in the Render dashboard after connecting this GitHub repo.
 
+### Persistent memory on Render (recommended)
+
+By default Render’s filesystem is **ephemeral** — when the service sleeps, DuckDB files disappear and pause state, portfolio sync, and research logs reset.
+
+The repo’s `render.yaml` attaches a **1 GB persistent disk** at `/var/data` and sets:
+
+```bash
+DUCKDB_PATH=/var/data/orders.db
+```
+
+After deploy, confirm in the Render dashboard:
+
+1. **Disks** — `mic-data` mounted at `/var/data`
+2. **Environment** — `DUCKDB_PATH=/var/data/orders.db`
+
+Everything below lives in that one file:
+
+| Table / data | Purpose |
+| --- | --- |
+| `agent_settings` | Pause/resume, last sweep timestamp |
+| `agent_events` | Scan history, portfolio analyses, catch-up sweeps |
+| `orders` | Paper trading ledger (training data) |
+| `recommendations` | Saved scout/tactical ideas |
+| `portfolio_*` | Robinhood accounts, holdings, insights |
+| `portfolio_chat_messages` | Portfolio advisor chat history |
+
+**Agents default to paused** on a fresh database so a cold start never burns credits. Click **Resume agents** when you want research to run. If research is stale by 24+ hours, resume triggers a **catch-up sweep**.
+
+To back up: download `/var/data/orders.db` from a one-off shell, or migrate later to [Render Postgres](https://render.com/docs/postgresql) for larger retention.
+
 ## Local development
 
 Use two processes so the Next.js dev server can hot-reload:

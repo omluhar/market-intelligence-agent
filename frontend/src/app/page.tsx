@@ -156,6 +156,18 @@ function errorMessage(err: unknown, fallback: string): string {
 
 const overviewCache = new Map<string, ScanResult>();
 let didBootstrap = false;
+const ACTIVE_TAB_STORAGE_KEY = "mic_active_tab";
+
+function readStoredTab(): "market" | "portfolio" {
+  if (typeof window === "undefined") {
+    return "market";
+  }
+  try {
+    return localStorage.getItem(ACTIVE_TAB_STORAGE_KEY) === "portfolio" ? "portfolio" : "market";
+  } catch {
+    return "market";
+  }
+}
 
 export default function Dashboard() {
   const [ticker, setTicker] = useState("AAPL");
@@ -171,9 +183,11 @@ export default function Dashboard() {
   const [chartInterval, setChartInterval] = useState<(typeof CHART_INTERVALS)[number]["interval"]>("1d");
   const [error, setError] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(false);
-  const [activeTab, setActiveTab] = useState<"market" | "portfolio">("market");
-  const [agentsPaused, setAgentsPaused] = useState(false);
+  const [activeTab, setActiveTab] = useState<"market" | "portfolio">(() => readStoredTab());
+  const [agentsPaused, setAgentsPaused] = useState(true);
   const [agentsStatusLoading, setAgentsStatusLoading] = useState(true);
+  const [daysSinceSweep, setDaysSinceSweep] = useState<number | null>(null);
+  const [catchUpNotice, setCatchUpNotice] = useState<string | null>(null);
   const requestIdRef = useRef(0);
   const historyRequestRef = useRef(0);
   const chartIntervalRef = useRef(chartInterval);
@@ -315,8 +329,15 @@ export default function Dashboard() {
     try {
       const res = await fetch(`${API_BASE}/api/v1/agents/status`);
       if (res.ok) {
-        const data: { paused: boolean } = await res.json();
+        const data: {
+          paused: boolean;
+          days_since_sweep?: number | null;
+          last_sweep_at?: string | null;
+        } = await res.json();
         setAgentsPaused(Boolean(data.paused));
+        setDaysSinceSweep(
+          typeof data.days_since_sweep === "number" ? data.days_since_sweep : null
+        );
       }
     } catch (err) {
       console.error("Agent status fetch error:", err);
@@ -335,8 +356,24 @@ export default function Dashboard() {
         body: JSON.stringify({ paused: nextPaused }),
       });
       if (res.ok) {
-        const data: { paused: boolean } = await res.json();
+        const data: {
+          paused: boolean;
+          catch_up_started?: boolean;
+          days_since_sweep?: number | null;
+        } = await res.json();
         setAgentsPaused(Boolean(data.paused));
+        setDaysSinceSweep(
+          typeof data.days_since_sweep === "number" ? data.days_since_sweep : null
+        );
+        if (data.paused) {
+          setCatchUpNotice(null);
+        } else if (data.catch_up_started) {
+          setCatchUpNotice(
+            "Catch-up research started — scanning your watchlist and the discovery universe for missed days."
+          );
+        } else {
+          setCatchUpNotice(null);
+        }
       }
     } catch (err) {
       console.error("Agent pause toggle error:", err);
@@ -450,6 +487,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTab);
+    } catch {
+      // ignore storage failures
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     fetchWatchlist();
     fetchOrders();
     fetchRecommendations();
@@ -554,6 +599,18 @@ export default function Dashboard() {
         <div className="max-w-7xl mx-auto mt-4 bg-amber-950/40 border border-amber-800/70 text-amber-100 text-xs rounded-lg px-4 py-2">
           Agents are paused. Background sweeps, manual scans, portfolio analysis, and Ask the desk are off until
           you click Resume agents.
+          {daysSinceSweep !== null && daysSinceSweep > 0 && (
+            <span className="block mt-1 text-amber-200/80">
+              Last full research sweep was ~{daysSinceSweep.toFixed(1)} day
+              {daysSinceSweep >= 1.5 ? "s" : ""} ago — resuming will run catch-up if it has been 24+ hours.
+            </span>
+          )}
+        </div>
+      )}
+
+      {catchUpNotice && (
+        <div className="max-w-7xl mx-auto mt-4 bg-cyan-950/40 border border-cyan-800/70 text-cyan-100 text-xs rounded-lg px-4 py-2">
+          {catchUpNotice}
         </div>
       )}
 

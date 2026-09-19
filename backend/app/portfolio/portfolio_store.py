@@ -1,3 +1,4 @@
+import logging
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -9,6 +10,8 @@ import duckdb
 from backend.app.config import settings
 
 AccountType = Literal["roth_ira", "taxable", "traditional_ira", "other"]
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY = False
@@ -332,12 +335,37 @@ def holding_context_for_symbol(symbol: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def get_agents_paused() -> bool:
+def get_agent_setting(key: str) -> Optional[str]:
     conn = _get_conn()
     row = conn.execute(
-        "SELECT value FROM agent_settings WHERE key = 'paused' LIMIT 1"
+        "SELECT value FROM agent_settings WHERE key = ? LIMIT 1",
+        (key,),
     ).fetchone()
-    return bool(row and str(row[0]).lower() == "true")
+    return str(row[0]) if row else None
+
+
+def set_agent_setting(key: str, value: str) -> None:
+    conn = _get_conn()
+    conn.execute(
+        """
+        INSERT INTO agent_settings (key, value) VALUES (?, ?)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
+
+
+def ensure_agent_settings_initialized() -> None:
+    if get_agent_setting("paused") is None:
+        set_agent_setting("paused", "true")
+        logger.info("Agent settings initialized to paused (safe default).")
+
+
+def get_agents_paused() -> bool:
+    value = get_agent_setting("paused")
+    if value is None:
+        return True
+    return value.lower() == "true"
 
 
 def set_portfolio_summary(summary: str) -> None:
@@ -360,14 +388,7 @@ def get_portfolio_summary() -> Optional[str]:
 
 
 def set_agents_paused(paused: bool) -> bool:
-    conn = _get_conn()
-    conn.execute(
-        """
-        INSERT INTO agent_settings (key, value) VALUES ('paused', ?)
-        ON CONFLICT (key) DO UPDATE SET value = excluded.value
-        """,
-        ("true" if paused else "false",),
-    )
+    set_agent_setting("paused", "true" if paused else "false")
     return paused
 
 
