@@ -20,12 +20,15 @@ from backend.app.execution.sandbox_router import (
 from backend.app.portfolio import portfolio_store
 from backend.app.services.council_service import evaluate_symbol
 from backend.app.services.market_cache import cached_history_bundle, load_overview
+from backend.app.agents.portfolio_chat import PortfolioChatRequest, PortfolioChatResponse
 from backend.app.services.portfolio_service import (
+    portfolio_chat,
     portfolio_status,
     run_portfolio_analysis,
     start_broker_connection,
     sync_broker_holdings,
 )
+from backend.app.storage.agent_memory import agent_memory_stats
 from backend.app.services.agent_control import AgentsPausedError, agents_status, assert_agents_active, set_agents_paused
 from backend.app.services.scheduler_service import run_market_sweep, scheduler_running, shutdown_scheduler, start_scheduler
 from backend.app.config import settings
@@ -242,6 +245,15 @@ def fetch_orders() -> List[Dict[str, Any]]:
     return get_order_history()
 
 
+@app.get("/api/v1/agent-memory/stats")
+def fetch_agent_memory_stats():
+    try:
+        return agent_memory_stats()
+    except Exception as exc:
+        logger.exception("Agent memory stats failed")
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @app.get("/api/v1/portfolio")
 def fetch_portfolio():
     try:
@@ -279,8 +291,20 @@ def analyze_portfolio():
     except AgentsPausedError as exc:
         raise HTTPException(status_code=423, detail=str(exc))
     except Exception as exc:
-        logger.exception("Portfolio analysis failed")
-        raise HTTPException(status_code=502, detail=str(exc))
+        logger.exception("Portfolio analyze failed")
+        raise HTTPException(status_code=502, detail=f"Portfolio analysis failed: {exc}")
+
+
+@app.post("/api/v1/portfolio/chat", response_model=PortfolioChatResponse)
+def portfolio_advisor_chat(req: PortfolioChatRequest):
+    try:
+        assert_agents_active()
+        return PortfolioChatResponse(reply=portfolio_chat(req))
+    except AgentsPausedError as exc:
+        raise HTTPException(status_code=423, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Portfolio chat failed")
+        raise HTTPException(status_code=502, detail=f"Portfolio chat failed: {exc}")
 
 
 @app.patch("/api/v1/portfolio/accounts/{account_id}")

@@ -10,6 +10,7 @@ import {
   TrendingUp,
   Wallet,
 } from "lucide-react";
+import PortfolioChat from "@/components/PortfolioChat";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ??
@@ -49,6 +50,8 @@ interface PortfolioInsight {
   action: string;
   title: string;
   body: string;
+  target_price?: number | null;
+  suggested_size?: string | null;
 }
 
 interface PortfolioDashboard {
@@ -414,6 +417,13 @@ export default function PortfolioPanel({
                     )}
                   </div>
                   <p className="text-neutral-400 leading-relaxed">{insight.body}</p>
+                  {(insight.target_price || insight.suggested_size) && (
+                    <p className="text-[11px] text-cyan-300/90">
+                      {insight.target_price ? `Target ~${formatUsd(insight.target_price)}` : ""}
+                      {insight.target_price && insight.suggested_size ? " · " : ""}
+                      {insight.suggested_size ?? ""}
+                    </p>
+                  )}
                   {insight.account_type && (
                     <p className="text-[10px] text-neutral-600 uppercase">
                       {ACCOUNT_LABELS[insight.account_type as AccountType] ?? insight.account_type}
@@ -438,6 +448,7 @@ export default function PortfolioPanel({
                   <th className="text-left py-2 pr-3">Symbol</th>
                   <th className="text-left py-2 pr-3">Account</th>
                   <th className="text-right py-2 pr-3">Qty</th>
+                  <th className="text-right py-2 pr-3">Avg cost</th>
                   <th className="text-right py-2 pr-3">Value</th>
                   <th className="text-right py-2">P/L</th>
                 </tr>
@@ -457,6 +468,7 @@ export default function PortfolioPanel({
                       {ACCOUNT_LABELS[holding.account_type] ?? holding.account_name}
                     </td>
                     <td className="py-2 pr-3 text-right text-neutral-300">{holding.quantity.toFixed(2)}</td>
+                    <td className="py-2 pr-3 text-right text-neutral-400">{formatUsd(holding.average_cost)}</td>
                     <td className="py-2 pr-3 text-right text-neutral-200">{formatUsd(holding.market_value)}</td>
                     <td
                       className={`py-2 text-right ${
@@ -472,6 +484,12 @@ export default function PortfolioPanel({
           </div>
         )}
       </div>
+
+      <PortfolioChat
+        apiBase={API_BASE}
+        agentsPaused={agentsPaused}
+        hasHoldings={Boolean(data?.holdings?.length || data?.accounts?.length)}
+      />
     </div>
   );
 }

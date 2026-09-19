@@ -7,6 +7,7 @@ from backend.app.agents.tactical_agent import run_tactical, tactical_to_trade_pr
 from backend.app.config import settings
 from backend.app.execution.sandbox_router import execute_order, save_recommendation
 from backend.app.portfolio.portfolio_store import holding_context_for_symbol
+from backend.app.storage.agent_memory import log_agent_event
 from backend.app.services.market_cache import EMPTY_TECHNICAL, load_market_bundle
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,19 @@ def evaluate_symbol(
             tactical_risk = RiskEvaluation.model_validate(_short_pass_risk())
 
     message = _compose_message(proposal, tactical, scout_risk, tactical_risk)
+    if persist:
+        log_agent_event(
+            "scan",
+            symbol=symbol,
+            payload={
+                "source": source,
+                "scout_action": proposal.action if proposal else None,
+                "tactical_action": tactical.action if tactical else None,
+                "last_price": last_price,
+                "portfolio_context": portfolio_context,
+                "message": message,
+            },
+        )
     return {
         "ticker": symbol,
         "snapshot": snapshot,

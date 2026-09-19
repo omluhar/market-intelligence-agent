@@ -44,11 +44,13 @@ def _migrate_schema(conn) -> None:
         ("cash_balance", "DOUBLE DEFAULT 0"),
         ("buying_power", "DOUBLE DEFAULT 0"),
         ("positions_value", "DOUBLE DEFAULT 0"),
+        ("target_price", "DOUBLE"),
+        ("suggested_size", "VARCHAR"),
     ):
+        table = "portfolio_accounts" if column in {"cash_balance", "buying_power", "positions_value"} else "portfolio_insights"
         conn.execute(
-            f"ALTER TABLE portfolio_accounts ADD COLUMN IF NOT EXISTS {column} {typedef}"
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {typedef}"
         )
-
 
 def _get_conn():
     global _SCHEMA_READY
@@ -273,7 +275,9 @@ def save_insights(insights: List[Dict[str, Any]]) -> None:
     for insight in insights:
         conn.execute(
             """
-            INSERT INTO portfolio_insights VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO portfolio_insights
+            (id, account_id, account_type, symbol, priority, action, title, body, generated_at, target_price, suggested_size)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 insight.get("id") or str(uuid.uuid4())[:12],
@@ -285,6 +289,8 @@ def save_insights(insights: List[Dict[str, Any]]) -> None:
                 insight.get("title"),
                 insight.get("body"),
                 now,
+                insight.get("target_price"),
+                insight.get("suggested_size"),
             ),
         )
 
@@ -332,6 +338,25 @@ def get_agents_paused() -> bool:
         "SELECT value FROM agent_settings WHERE key = 'paused' LIMIT 1"
     ).fetchone()
     return bool(row and str(row[0]).lower() == "true")
+
+
+def set_portfolio_summary(summary: str) -> None:
+    conn = _get_conn()
+    conn.execute(
+        """
+        INSERT INTO agent_settings (key, value) VALUES ('portfolio_summary', ?)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value
+        """,
+        (summary,),
+    )
+
+
+def get_portfolio_summary() -> Optional[str]:
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT value FROM agent_settings WHERE key = 'portfolio_summary' LIMIT 1"
+    ).fetchone()
+    return str(row[0]) if row else None
 
 
 def set_agents_paused(paused: bool) -> bool:

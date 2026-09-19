@@ -932,16 +932,21 @@ export default function Dashboard() {
             <div className="flex items-center justify-between pb-4 border-b border-neutral-800">
               <div className="flex items-center gap-2">
                 <Database className="h-4 w-4 text-neutral-400" />
-                <h3 className="text-sm font-bold tracking-wide uppercase">Execution Ledger</h3>
+                <h3 className="text-sm font-bold tracking-wide uppercase">Paper trading ledger</h3>
               </div>
               <span className="text-[10px] bg-neutral-800 text-neutral-400 px-2 py-0.5 rounded uppercase font-semibold">
-                DuckDB (Local)
+                Training data
               </span>
             </div>
-            <p className="text-[11px] text-neutral-500 mt-2">Simulated fills only. Nothing is sent to a real broker.</p>
+            <p className="text-[11px] text-neutral-500 mt-2">
+              Simulated Scout/Tactical fills for a fake $20k sandbox — not your Robinhood account. Logged for future
+              agent training; no real trades.
+            </p>
             <div className="flex-1 overflow-y-auto mt-4 space-y-3 pr-1">
               {orders.length === 0 ? (
-                <p className="text-xs text-neutral-500 text-center py-12">No simulated orders recorded yet.</p>
+                <p className="text-xs text-neutral-500 text-center py-12">
+                  No paper trades yet. Scans that pass risk checks record simulated orders here.
+                </p>
               ) : (
                 orders.map((ord) => (
                   <div

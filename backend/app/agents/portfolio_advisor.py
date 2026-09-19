@@ -25,24 +25,28 @@ above 20% warrants review. Shorter holds are acceptable when fundamentals deteri
 
 SYSTEM_PROMPT = """You are the Portfolio Advisor for Market Intelligence Council.
 
-You receive live holdings plus Scout (fundamental) and Tactical (momentum) signals for each symbol.
-Produce actionable, conservative guidance tailored to the account goal. You do NOT place trades.
+You receive live holdings (quantity, average cost, current price, unrealized P/L) plus Scout and Tactical
+signals for each symbol. Produce actionable guidance tailored to each account's goal. You do NOT place trades.
 
 Output JSON with an "insights" array. Each insight needs:
 - account_id (string)
 - account_type (roth_ira | taxable | traditional_ira | other)
-- symbol (string or null for portfolio-level insight)
+- symbol (string or null for portfolio-level / rebalancing insight)
 - priority (high | medium | low)
 - action (HOLD | TRIM | ADD | REVIEW | REBALANCE | WATCH)
 - title (short headline)
-- body (2-4 sentences, plain English)
+- body (2-5 sentences referencing the user's cost basis vs current price when relevant)
+- target_price (number or null): suggested limit/stop reference price when ADD/TRIM/WATCH
+- suggested_size (string or null): e.g. "Trim 10 shares", "Add $500", "Move $2,000 cash to VTI in Roth"
 
 Rules:
 - Roth IRA: prioritize hold/compound; trim only on concentration or broken thesis.
 - Taxable: allow tactical trims/adds when signals align; mention tax awareness without inventing tax lots.
-- Never invent prices; use provided data only.
-- Include at least one portfolio-level insight (symbol null) about allocation and risk.
-- Maximum 12 insights total.
+- Use provided average_cost and current_price — compare them explicitly in body when advising ADD/TRIM.
+- Include at least one REBALANCE insight (symbol null) comparing cash vs invested across accounts.
+- Include per-holding insights for positions above 5% of total portfolio weight when action is not HOLD.
+- Never invent prices; use provided data and round to sensible decimals.
+- Maximum 15 insights total.
 """
 
 
@@ -54,6 +58,8 @@ class PortfolioInsight(BaseModel):
     action: str = "REVIEW"
     title: str
     body: str
+    target_price: Optional[float] = None
+    suggested_size: Optional[str] = None
 
 
 class PortfolioAdvice(BaseModel):
@@ -86,6 +92,8 @@ def _research_symbol(symbol: str) -> Dict[str, Any]:
             "scout_thesis": scout.thesis if scout else None,
             "tactical_action": tactical.action if tactical else None,
             "tactical_rationale": tactical.rationale if tactical else None,
+            "tactical_target": tactical.target_price if tactical else None,
+            "tactical_stop": tactical.stop_loss if tactical else None,
         }
     except Exception as exc:
         logger.warning("Portfolio research failed for %s: %s", ticker, exc)
@@ -95,7 +103,7 @@ def _research_symbol(symbol: str) -> Dict[str, Any]:
 def analyze_portfolio(dashboard: Dict[str, Any]) -> Dict[str, Any]:
     accounts = dashboard.get("accounts") or []
     holdings = dashboard.get("holdings") or []
-    if not holdings:
+    if not holdings and not any(float(a.get("cash_balance") or 0) > 0 for a in accounts):
         return {
             "summary": "Connect Robinhood or add holdings to receive tailored portfolio guidance.",
             "insights": [],
@@ -109,7 +117,10 @@ def analyze_portfolio(dashboard: Dict[str, Any]) -> Dict[str, Any]:
     for holding in holdings:
         market_value = float(holding.get("market_value") or 0)
         total = float(dashboard.get("total_value") or 1)
+        avg_cost = float(holding.get("average_cost") or 0)
+        current_price = float(holding.get("current_price") or 0)
         weight_pct = round((market_value / total) * 100, 2) if total > 0 else 0
+        pct_from_cost = round(((current_price - avg_cost) / avg_cost) * 100, 2) if avg_cost > 0 else None
         holdings_payload.append(
             {
                 "account_id": holding.get("account_id"),
@@ -117,17 +128,32 @@ def analyze_portfolio(dashboard: Dict[str, Any]) -> Dict[str, Any]:
                 "account_type": holding.get("account_type"),
                 "symbol": holding.get("symbol"),
                 "quantity": holding.get("quantity"),
-                "average_cost": holding.get("average_cost"),
-                "current_price": holding.get("current_price"),
+                "average_cost": avg_cost,
+                "current_price": current_price,
                 "market_value": market_value,
                 "unrealized_pnl": holding.get("unrealized_pnl"),
                 "weight_pct": weight_pct,
+                "pct_gain_from_cost_basis": pct_from_cost,
             }
         )
 
+    accounts_payload = []
     goals = []
     for account in accounts:
         acct_type = str(account.get("account_type") or "other")
+        cash = float(account.get("cash_balance") or 0)
+        positions = float(account.get("positions_value") or 0)
+        accounts_payload.append(
+            {
+                "id": account.get("id"),
+                "name": account.get("name"),
+                "account_type": acct_type,
+                "cash_balance": cash,
+                "positions_value": positions,
+                "total_value": round(cash + positions, 2),
+                "buying_power": account.get("buying_power"),
+            }
+        )
         if acct_type == "roth_ira":
             goals.append(f"{account.get('name')}: {ROTH_PROMPT}")
         elif acct_type == "taxable":
@@ -135,6 +161,7 @@ def analyze_portfolio(dashboard: Dict[str, Any]) -> Dict[str, Any]:
 
     payload = {
         "account_goals": goals,
+        "accounts": accounts_payload,
         "total_value": dashboard.get("total_value"),
         "value_by_account_type": dashboard.get("value_by_account_type"),
         "holdings": holdings_payload,
@@ -145,7 +172,7 @@ def analyze_portfolio(dashboard: Dict[str, Any]) -> Dict[str, Any]:
     advice = structured.invoke(
         [
             SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=json.dumps(payload, default=str)[:14000]),
+            HumanMessage(content=json.dumps(payload, default=str)[:16000]),
         ]
     )
     if isinstance(advice, dict):

@@ -124,6 +124,25 @@ def execute_order(proposal: TradeProposal, risk: RiskEvaluation, is_dry_run: boo
     ))
     conn.close()
 
+    if is_dry_run:
+        try:
+            from backend.app.storage.agent_memory import log_agent_event
+
+            log_agent_event(
+                "paper_order",
+                symbol=proposal.symbol,
+                payload={
+                    "action": proposal.action,
+                    "shares": shares,
+                    "price": price,
+                    "total_value": total_value,
+                    "thesis": proposal.thesis,
+                    "risk_reason": risk.reason,
+                },
+            )
+        except Exception:
+            pass
+
     return {
         "order_id": order_id,
         "id": order_id,
