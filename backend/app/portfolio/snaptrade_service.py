@@ -129,6 +129,7 @@ def _portal_login(*, redirect_url: Optional[str], force_personal: bool) -> Dict[
     kwargs: Dict[str, Any] = {
         "connection_type": "read",
         "connection_portal_version": "v4",
+        "broker": "ROBINHOOD",
     }
     if user_id and user_secret:
         kwargs["user_id"] = user_id

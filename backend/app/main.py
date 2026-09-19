@@ -26,7 +26,8 @@ from backend.app.services.portfolio_service import (
     start_broker_connection,
     sync_broker_holdings,
 )
-from backend.app.services.scheduler_service import run_market_sweep, shutdown_scheduler, start_scheduler
+from backend.app.services.agent_control import AgentsPausedError, agents_status, assert_agents_active, set_agents_paused
+from backend.app.services.scheduler_service import run_market_sweep, scheduler_running, shutdown_scheduler, start_scheduler
 from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,16 @@ class WatchlistRequest(BaseModel):
 
 
 class SweepResponse(BaseModel):
-    status: Literal["sweep triggered", "sweep already running"]
+    status: Literal["sweep triggered", "sweep already running", "agents paused"]
+
+
+class AgentsStatusResponse(BaseModel):
+    paused: bool
+    scheduler_running: bool
+
+
+class AgentsPauseRequest(BaseModel):
+    paused: bool
 
 
 class PortfolioConnectResponse(BaseModel):
@@ -174,10 +184,22 @@ def ticker_overview(ticker: str):
         raise HTTPException(status_code=502, detail=f"Overview failed for {symbol}: {exc}")
 
 
+@app.get("/api/v1/agents/status", response_model=AgentsStatusResponse)
+def fetch_agents_status():
+    return AgentsStatusResponse(**agents_status(scheduler_running=scheduler_running()))
+
+
+@app.post("/api/v1/agents/pause", response_model=AgentsStatusResponse)
+def pause_agents(req: AgentsPauseRequest):
+    set_agents_paused(req.paused)
+    return AgentsStatusResponse(**agents_status(scheduler_running=scheduler_running()))
+
+
 @app.post("/api/v1/scan/{ticker}", response_model=ScanResponse)
 def scan_ticker(ticker: str):
     symbol = ticker.upper().strip()
     try:
+        assert_agents_active()
         result = evaluate_symbol(
             symbol,
             include_news=True,
@@ -185,6 +207,8 @@ def scan_ticker(ticker: str):
             execute=True,
             source="SCAN",
         )
+    except AgentsPausedError as exc:
+        raise HTTPException(status_code=423, detail=str(exc))
     except Exception as exc:
         logger.exception("Council scan failed for %s", symbol)
         raise HTTPException(status_code=502, detail=f"Scan failed for {symbol}: {exc}")
@@ -193,6 +217,8 @@ def scan_ticker(ticker: str):
 
 @app.post("/api/v1/sweep", response_model=SweepResponse)
 def trigger_sweep():
+    if agents_status(scheduler_running=scheduler_running())["paused"]:
+        return SweepResponse(status="agents paused")
     started = run_market_sweep(background=True)
     if not started:
         return SweepResponse(status="sweep already running")
@@ -202,7 +228,10 @@ def trigger_sweep():
 @app.post("/api/v1/desk-chat", response_model=DeskChatResponse)
 def desk_chat(req: DeskChatRequest):
     try:
+        assert_agents_active()
         return DeskChatResponse(reply=answer_desk_question(req))
+    except AgentsPausedError as exc:
+        raise HTTPException(status_code=423, detail=str(exc))
     except Exception as exc:
         logger.exception("Desk guide failed")
         raise HTTPException(status_code=502, detail=f"Desk guide failed: {exc}")
@@ -245,7 +274,10 @@ def sync_portfolio():
 @app.post("/api/v1/portfolio/analyze")
 def analyze_portfolio():
     try:
+        assert_agents_active()
         return run_portfolio_analysis()
+    except AgentsPausedError as exc:
+        raise HTTPException(status_code=423, detail=str(exc))
     except Exception as exc:
         logger.exception("Portfolio analysis failed")
         raise HTTPException(status_code=502, detail=str(exc))

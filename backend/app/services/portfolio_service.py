@@ -11,8 +11,8 @@ def portfolio_status() -> Dict[str, Any]:
     dashboard = portfolio_store.get_portfolio_dashboard()
     dashboard["snaptrade_configured"] = snaptrade_service.snaptrade_configured()
     dashboard["snaptrade_auth_mode"] = snaptrade_service.auth_mode()
-    if snaptrade_service.is_personal_auth() and dashboard["snaptrade_configured"]:
-        dashboard["connected"] = bool(dashboard.get("accounts")) or dashboard.get("connected")
+    if dashboard["snaptrade_configured"]:
+        dashboard["broker_linked"] = bool(dashboard.get("accounts"))
     return dashboard
 
 

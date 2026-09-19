@@ -30,9 +30,11 @@ const STARTERS = [
 export default function DeskChat({
   apiBase,
   context,
+  agentsPaused = false,
 }: {
   apiBase: string;
   context: DeskChatContext;
+  agentsPaused?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -52,7 +54,7 @@ export default function DeskChat({
 
   const send = async (text: string) => {
     const message = text.trim();
-    if (!message || pending) {
+    if (!message || pending || agentsPaused) {
       return;
     }
     const nextTurns = [...turns, { role: "user" as const, content: message }];
@@ -106,7 +108,11 @@ export default function DeskChat({
         <div>
           <p className="text-sm font-semibold">Desk guide</p>
           <p className="text-[11px] text-neutral-500">
-            {context.ticker ? `Context: ${context.ticker}` : "Explains this interface"}
+            {agentsPaused
+              ? "Paused — resume agents to chat"
+              : context.ticker
+                ? `Context: ${context.ticker}`
+                : "Explains this interface"}
           </p>
         </div>
         <button onClick={() => setOpen(false)} className="text-neutral-400 hover:text-white" aria-label="Close chat">
@@ -134,7 +140,7 @@ export default function DeskChat({
           <button
             key={starter}
             onClick={() => void send(starter)}
-            disabled={pending}
+            disabled={pending || agentsPaused}
             className="text-[10px] px-2 py-1 rounded-full border border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:border-neutral-600 disabled:opacity-50"
           >
             {starter}
@@ -145,12 +151,13 @@ export default function DeskChat({
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="What is Trailing P/E?"
-          className="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 focus:outline-none focus:border-orange-500"
+          placeholder={agentsPaused ? "Agents paused" : "What is Trailing P/E?"}
+          disabled={agentsPaused}
+          className="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-neutral-100 focus:outline-none focus:border-orange-500 disabled:opacity-50"
         />
         <button
           type="submit"
-          disabled={pending || !input.trim()}
+          disabled={pending || agentsPaused || !input.trim()}
           className="bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-lg px-3"
           aria-label="Send"
         >

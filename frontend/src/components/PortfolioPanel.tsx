@@ -50,6 +50,7 @@ interface PortfolioInsight {
 
 interface PortfolioDashboard {
   connected: boolean;
+  broker_linked?: boolean;
   snaptrade_configured: boolean;
   snaptrade_auth_mode?: string;
   accounts: PortfolioAccount[];
@@ -74,13 +75,38 @@ function formatUsd(value: number | null | undefined): string {
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
-export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (symbol: string) => void }) {
+function clearSnapTradeRedirectParams(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const status = params.get("status");
+  if (!status) {
+    return null;
+  }
+  params.delete("status");
+  params.delete("connection_id");
+  params.delete("status_code");
+  params.delete("error_code");
+  const qs = params.toString();
+  window.history.replaceState({}, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+  return status;
+}
+
+export default function PortfolioPanel({
+  onSelectTicker,
+  agentsPaused = false,
+}: {
+  onSelectTicker: (symbol: string) => void;
+  agentsPaused?: boolean;
+}) {
   const [data, setData] = useState<PortfolioDashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   const loadPortfolio = useCallback(async () => {
     setLoading(true);
@@ -121,22 +147,50 @@ export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (sy
     }
   };
 
-  const syncHoldings = async () => {
+  const syncHoldings = useCallback(async () => {
     setSyncing(true);
     setError(null);
+    setSyncNotice(null);
     try {
       const res = await fetch(`${API_BASE}/api/v1/portfolio/sync`, { method: "POST" });
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.detail || "Sync failed");
       }
+      const payload = await res.json();
       await loadPortfolio();
+      const accounts = Number(payload.accounts ?? 0);
+      const positions = Number(payload.positions ?? 0);
+      if (accounts > 0) {
+        setSyncNotice(
+          `Synced ${accounts} account${accounts === 1 ? "" : "s"} and ${positions} holding${positions === 1 ? "" : "s"}.`
+        );
+      } else {
+        setSyncNotice(
+          "Robinhood is linked, but no accounts were returned yet. Wait a minute and sync again."
+        );
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Sync failed");
     } finally {
       setSyncing(false);
     }
-  };
+  }, [loadPortfolio]);
+
+  useEffect(() => {
+    const status = clearSnapTradeRedirectParams();
+    if (status === "SUCCESS") {
+      void syncHoldings();
+      return;
+    }
+    if (status === "ERROR") {
+      setError("Robinhood connection failed in the SnapTrade portal. Try Connect Robinhood again.");
+      return;
+    }
+    if (status === "ABANDONED") {
+      setSyncNotice("Robinhood connection was cancelled. You can connect again anytime.");
+    }
+  }, [syncHoldings]);
 
   const analyzePortfolio = async () => {
     setAnalyzing(true);
@@ -205,7 +259,7 @@ export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (sy
             </button>
             <button
               onClick={() => void syncHoldings()}
-              disabled={syncing || !data?.connected}
+              disabled={syncing || !data?.snaptrade_configured}
               className="flex items-center gap-1.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
@@ -213,7 +267,8 @@ export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (sy
             </button>
             <button
               onClick={() => void analyzePortfolio()}
-              disabled={analyzing || !data?.holdings?.length}
+              disabled={analyzing || agentsPaused || !data?.holdings?.length}
+              title={agentsPaused ? "Resume agents from the desk header to analyze" : undefined}
               className="flex items-center gap-1.5 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg"
             >
               <Sparkles className={`h-3.5 w-3.5 ${analyzing ? "animate-spin" : ""}`} />
@@ -237,10 +292,22 @@ export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (sy
           </div>
         )}
 
+        {syncNotice && (
+          <div className="mt-4 bg-emerald-950/30 border border-emerald-800/60 p-3 rounded-lg text-emerald-200 text-sm">
+            {syncNotice}
+          </div>
+        )}
+
         {error && (
           <div className="mt-4 bg-red-950/40 border border-red-800/80 p-3 rounded-lg flex items-center gap-2 text-red-200 text-sm">
             <AlertTriangle className="h-4 w-4 shrink-0" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {syncing && (
+          <div className="mt-4 text-xs text-cyan-300 bg-cyan-950/30 border border-cyan-800/50 rounded-lg p-3">
+            Syncing Robinhood accounts and holdings…
           </div>
         )}
 
@@ -263,7 +330,9 @@ export default function PortfolioPanel({ onSelectTicker }: { onSelectTicker: (sy
           </div>
           {!data?.accounts?.length ? (
             <p className="text-xs text-neutral-500">
-              No accounts linked yet. Connect Robinhood, complete the portal login, then click Sync holdings.
+              {data?.broker_linked
+                ? "Accounts are linked but empty. Click Sync holdings again in a minute."
+                : "Connect Robinhood, finish the portal login, and holdings will sync automatically when you return."}
             </p>
           ) : (
             <div className="space-y-3">

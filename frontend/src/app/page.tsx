@@ -8,6 +8,8 @@ import {
   ArrowUpRight,
   Database,
   Newspaper,
+  Pause,
+  Play,
   Radar,
   RefreshCw,
   Search,
@@ -170,6 +172,8 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [hydrating, setHydrating] = useState(false);
   const [activeTab, setActiveTab] = useState<"market" | "portfolio">("market");
+  const [agentsPaused, setAgentsPaused] = useState(false);
+  const [agentsStatusLoading, setAgentsStatusLoading] = useState(true);
   const requestIdRef = useRef(0);
   const historyRequestRef = useRef(0);
   const chartIntervalRef = useRef(chartInterval);
@@ -307,10 +311,48 @@ export default function Dashboard() {
       .catch(() => undefined);
   }, []);
 
+  const fetchAgentsStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/agents/status`);
+      if (res.ok) {
+        const data: { paused: boolean } = await res.json();
+        setAgentsPaused(Boolean(data.paused));
+      }
+    } catch (err) {
+      console.error("Agent status fetch error:", err);
+    } finally {
+      setAgentsStatusLoading(false);
+    }
+  }, []);
+
+  const toggleAgentsPaused = useCallback(async () => {
+    const nextPaused = !agentsPaused;
+    setAgentsStatusLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/agents/pause`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused: nextPaused }),
+      });
+      if (res.ok) {
+        const data: { paused: boolean } = await res.json();
+        setAgentsPaused(Boolean(data.paused));
+      }
+    } catch (err) {
+      console.error("Agent pause toggle error:", err);
+    } finally {
+      setAgentsStatusLoading(false);
+    }
+  }, [agentsPaused]);
+
   const runScan = useCallback(
     async (symbolToScan: string) => {
       const symbol = symbolToScan.trim().toUpperCase();
       if (!symbol) {
+        return;
+      }
+      if (agentsPaused) {
+        setError("Agents are paused. Resume agents from the header to run scans.");
         return;
       }
       setLoading(true);
@@ -336,10 +378,14 @@ export default function Dashboard() {
         setLoading(false);
       }
     },
-    [fetchOrders, fetchRecommendations]
+    [agentsPaused, fetchOrders, fetchRecommendations]
   );
 
   const triggerSweep = useCallback(async () => {
+    if (agentsPaused) {
+      setError("Agents are paused. Resume agents from the header to run sweeps.");
+      return;
+    }
     setSweeping(true);
     setError(null);
     try {
@@ -348,13 +394,19 @@ export default function Dashboard() {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.detail || "Sweep request failed");
       }
+      const payload = await res.json();
+      if (payload.status === "agents paused") {
+        setAgentsPaused(true);
+        setError("Agents are paused. Background sweeps and scans are stopped.");
+        return;
+      }
       await Promise.all([fetchRecommendations(), fetchOrders()]);
     } catch (err: unknown) {
       setError(errorMessage(err, "Sweep failed"));
     } finally {
       setSweeping(false);
     }
-  }, [fetchOrders, fetchRecommendations]);
+  }, [agentsPaused, fetchOrders, fetchRecommendations]);
 
   const addCurrentToWatchlist = useCallback(async () => {
     const symbol = ticker.trim().toUpperCase();
@@ -391,9 +443,17 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("status") === "SUCCESS") {
+      setActiveTab("portfolio");
+    }
+  }, []);
+
+  useEffect(() => {
     fetchWatchlist();
     fetchOrders();
     fetchRecommendations();
+    void fetchAgentsStatus();
     if (!didBootstrap) {
       didBootstrap = true;
       void selectTicker("AAPL");
@@ -404,7 +464,7 @@ export default function Dashboard() {
       void fetchWatchlist();
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [fetchOrders, fetchRecommendations, fetchWatchlist, selectTicker]);
+  }, [fetchAgentsStatus, fetchOrders, fetchRecommendations, fetchWatchlist, selectTicker]);
 
   useEffect(() => {
     watchlist.forEach((symbol, index) => {
@@ -445,8 +505,25 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto">
-          <div className="relative flex-1 md:w-64">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          <button
+            onClick={() => void toggleAgentsPaused()}
+            disabled={agentsStatusLoading}
+            className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2.5 rounded-lg border transition-all disabled:opacity-50 ${
+              agentsPaused
+                ? "bg-amber-950 border-amber-700 text-amber-200 hover:bg-amber-900"
+                : "bg-neutral-900 border-neutral-700 text-neutral-200 hover:bg-neutral-800"
+            }`}
+            title={
+              agentsPaused
+                ? "Agents are paused — no background sweeps, scans, or LLM analysis"
+                : "Pause background sweeps, scans, and LLM analysis to save credits"
+            }
+          >
+            {agentsPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+            {agentsPaused ? "Resume agents" : "Pause agents"}
+          </button>
+          <div className="relative flex-1 md:w-64 min-w-[12rem]">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-neutral-500" />
             <input
               type="text"
@@ -459,15 +536,26 @@ export default function Dashboard() {
           </div>
           <button
             onClick={() => runScan(ticker)}
-            disabled={loading}
+            disabled={loading || agentsPaused}
             className="flex items-center gap-1.5 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition-all"
-            title="Run Scout + Tactical + Risk Guardian. May record a simulated order."
+            title={
+              agentsPaused
+                ? "Resume agents to run scans"
+                : "Run Scout + Tactical + Risk Guardian. May record a simulated order."
+            }
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             Scan
           </button>
         </div>
       </header>
+
+      {agentsPaused && (
+        <div className="max-w-7xl mx-auto mt-4 bg-amber-950/40 border border-amber-800/70 text-amber-100 text-xs rounded-lg px-4 py-2">
+          Agents are paused. Background sweeps, manual scans, portfolio analysis, and Ask the desk are off until
+          you click Resume agents.
+        </div>
+      )}
 
       <div className="max-w-7xl mx-auto mt-4 flex gap-2">
         <button
@@ -496,7 +584,7 @@ export default function Dashboard() {
 
       {activeTab === "portfolio" ? (
         <div className="max-w-7xl mx-auto mt-6">
-          <PortfolioPanel onSelectTicker={openTickerFromPortfolio} />
+          <PortfolioPanel onSelectTicker={openTickerFromPortfolio} agentsPaused={agentsPaused} />
         </div>
       ) : (
         <>
@@ -796,9 +884,13 @@ export default function Dashboard() {
               </div>
               <button
                 onClick={() => void triggerSweep()}
-                disabled={sweeping}
+                disabled={sweeping || agentsPaused}
                 className="shrink-0 flex items-center gap-1 text-[10px] font-semibold uppercase bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 px-2.5 py-1 rounded-md"
-                title="Background scan of the watchlist plus a discovery universe."
+                title={
+                  agentsPaused
+                    ? "Resume agents to run sweeps"
+                    : "Background scan of the watchlist plus a discovery universe."
+                }
               >
                 <Sparkles className={`h-3 w-3 ${sweeping ? "animate-spin" : ""}`} />
                 {sweeping ? "Sweeping" : "Trigger Sweep"}
@@ -887,6 +979,7 @@ export default function Dashboard() {
       )}
       <DeskChat
         apiBase={API_BASE}
+        agentsPaused={agentsPaused}
         context={{
           ticker: scanData?.ticker ?? ticker,
           chart_interval: chartInterval,

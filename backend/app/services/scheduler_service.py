@@ -4,6 +4,7 @@ import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from backend.app.execution.sandbox_router import get_watchlist
+from backend.app.services.agent_control import agents_paused
 from backend.app.services.council_service import evaluate_symbol
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,9 @@ DISCOVERY_UNIVERSE = ["GOOGL", "AMZN", "META", "TSLA", "AMD", "INTC", "VZ", "DIS
 
 
 def _run_market_sweep() -> None:
+    if agents_paused():
+        logger.info("Skipping background sweep; agents are paused.")
+        return
     logger.info("Executing autonomous market background sweep...")
     watchlist = get_watchlist()
     full_scan_targets = list(dict.fromkeys(watchlist + DISCOVERY_UNIVERSE))
@@ -67,3 +71,7 @@ def start_scheduler():
 def shutdown_scheduler():
     if scheduler.running:
         scheduler.shutdown()
+
+
+def scheduler_running() -> bool:
+    return scheduler.running

@@ -83,6 +83,10 @@ def _get_conn():
                     body VARCHAR,
                     generated_at TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS agent_settings (
+                    key VARCHAR PRIMARY KEY,
+                    value VARCHAR NOT NULL
+                );
             """)
             _SCHEMA_READY = True
     return conn
@@ -291,6 +295,26 @@ def holding_context_for_symbol(symbol: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def get_agents_paused() -> bool:
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT value FROM agent_settings WHERE key = 'paused' LIMIT 1"
+    ).fetchone()
+    return bool(row and str(row[0]).lower() == "true")
+
+
+def set_agents_paused(paused: bool) -> bool:
+    conn = _get_conn()
+    conn.execute(
+        """
+        INSERT INTO agent_settings (key, value) VALUES ('paused', ?)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value
+        """,
+        ("true" if paused else "false",),
+    )
+    return paused
+
+
 def get_portfolio_dashboard() -> Dict[str, Any]:
     conn = _get_conn()
     user = get_portfolio_user()
@@ -314,7 +338,7 @@ def get_portfolio_dashboard() -> Dict[str, Any]:
         acct_type = str(holding.get("account_type") or "other")
         by_type[acct_type] = by_type.get(acct_type, 0.0) + float(holding.get("market_value") or 0)
     return {
-        "connected": user is not None,
+        "connected": user is not None or bool(accounts),
         "user": user,
         "accounts": accounts,
         "holdings": holdings,
